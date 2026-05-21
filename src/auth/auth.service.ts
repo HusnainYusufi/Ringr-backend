@@ -179,6 +179,52 @@ export class AuthService {
     });
   }
 
+  // ─── /auth/me ──────────────────────────────────────────────────────────────
+
+  /**
+   * Returns the current session user — drives role-based UI on the portal.
+   * The JWT already carries `role`, but the client needs name/email/provider
+   * details too, so we resolve them server-side off the sub claim.
+   */
+  async getMe(payload: JwtPayload) {
+    if (payload.type === 'staff') {
+      const staff = await this.prisma.providerStaff.findFirst({
+        where: { id: payload.sub, isDeleted: false },
+        include: {
+          provider: {
+            select: { id: true, name: true, verticalId: true, isActive: true },
+          },
+        },
+      });
+      if (!staff) throw new UnauthorizedException('User not found');
+      return {
+        id: staff.id,
+        type: 'staff' as const,
+        role: staff.role,
+        email: staff.email,
+        firstName: staff.firstName,
+        lastName: staff.lastName,
+        isActive: staff.isActive,
+        tenantId: staff.tenantId,
+        providerId: staff.providerId,
+        provider: staff.provider,
+      };
+    }
+
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: payload.sub, isDeleted: false },
+    });
+    if (!customer) throw new UnauthorizedException('User not found');
+    return {
+      id: customer.id,
+      type: 'customer' as const,
+      role: Role.CUSTOMER,
+      phone: customer.phone,
+      name: customer.name,
+      tenantId: customer.tenantId,
+    };
+  }
+
   // ─── Accept magic-link invite ──────────────────────────────────────────────
 
   /**

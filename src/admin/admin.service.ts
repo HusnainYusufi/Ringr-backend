@@ -19,7 +19,7 @@ import {
   CreateTenantAdminDto,
 } from './dto/create-tenant.dto';
 import { OnboardProviderDto } from './dto/onboard-provider.dto';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 
 @Injectable()
 export class AdminService {
@@ -328,5 +328,278 @@ export class AdminService {
     ]);
 
     return { tenantCount, providerCount, customerCount, bookingCount };
+  }
+
+  // ─── SUPER_ADMIN unified dashboard ────────────────────────────────────────
+
+  /**
+   * Cross-tenant dashboard payload. One round-trip, everything the admin
+   * landing page needs:
+   *   - Totals (tenants, providers, customers, bookings, calls)
+   *   - This-week counts + AI call → booking conversion rate
+   *   - Revenue this month (sum of CHARGE ledger entries)
+   *   - Recent activity (latest 10 calls, latest 10 bookings)
+   *   - Top providers by bookings
+   */
+  async getAdminOverview() {
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    startOfWeek.setHours(0, 0, 0, 0);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      tenantCount,
+      activeProviders,
+      totalCustomers,
+      totalBookings,
+      totalCalls,
+      callsThisWeek,
+      callsThisWeekWithBooking,
+      bookingsThisWeek,
+      completedThisWeek,
+      pendingInvites,
+      revenueAgg,
+      recentCalls,
+      recentBookings,
+    ] = await this.prisma.$transaction([
+      this.prisma.tenant.count({ where: { isActive: true } }),
+      this.prisma.provider.count({ where: { isDeleted: false, isActive: true } }),
+      this.prisma.customer.count({ where: { isDeleted: false } }),
+      this.prisma.booking.count({ where: { isDeleted: false } }),
+      this.prisma.callSession.count(),
+      this.prisma.callSession.count({ where: { startedAt: { gte: startOfWeek } } }),
+      this.prisma.callSession.count({
+        where: { startedAt: { gte: startOfWeek }, bookingId: { not: null } },
+      }),
+      this.prisma.booking.count({
+        where: { isDeleted: false, createdAt: { gte: startOfWeek } },
+      }),
+      this.prisma.booking.count({
+        where: { status: 'COMPLETED', completedAt: { gte: startOfWeek } },
+      }),
+      this.prisma.magicLink.count({
+        where: {
+          purpose: 'ONBOARDING',
+          consumedAt: null,
+          expiresAt: { gte: new Date() },
+        },
+      }),
+      this.prisma.billingLedgerEntry.aggregate({
+        where: { type: 'CHARGE', createdAt: { gte: startOfMonth } },
+        _sum: { amountCents: true },
+      }),
+      this.prisma.callSession.findMany({
+        take: 10,
+        orderBy: { startedAt: 'desc' },
+        select: {
+          id: true,
+          callId: true,
+          fromPhone: true,
+          startedAt: true,
+          endedAt: true,
+          durationMs: true,
+          bookingId: true,
+        },
+      }),
+      this.prisma.booking.findMany({
+        take: 10,
+        where: { isDeleted: false },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+          customer: { select: { name: true, phone: true } },
+          provider: { select: { id: true, name: true } },
+          slot: { select: { startsAt: true } },
+        },
+      }),
+    ]);
+
+    // groupBy can't live inside $transaction without tripping Prisma's TS
+    // circular-type bug. Run it separately; consistency tradeoff is fine
+    // (read-only dashboard, no FK dependence).
+    const topProvidersRaw = await this.prisma.booking.groupBy({
+      by: ['providerId'],
+      where: { isDeleted: false, createdAt: { gte: startOfMonth } },
+      _count: { id: true },
+      orderBy: { _count: { id: 'desc' } },
+      take: 5,
+    });
+
+    // Resolve provider names for the top-providers list.
+    const topProviderIds = topProvidersRaw.map((p) => p.providerId);
+    const topProviderNames = topProviderIds.length
+      ? await this.prisma.provider.findMany({
+          where: { id: { in: topProviderIds } },
+          select: { id: true, name: true, city: true },
+        })
+      : [];
+    const topProviders = topProvidersRaw.map((row) => ({
+      ...topProviderNames.find((p) => p.id === row.providerId),
+      bookingCount: row._count.id,
+    }));
+
+    const conversionRate =
+      callsThisWeek > 0 ? callsThisWeekWithBooking / callsThisWeek : 0;
+
+    return {
+      totals: {
+        tenants: tenantCount,
+        activeProviders,
+        customers: totalCustomers,
+        bookings: totalBookings,
+        calls: totalCalls,
+        pendingInvites,
+      },
+      thisWeek: {
+        calls: callsThisWeek,
+        bookings: bookingsThisWeek,
+        completed: completedThisWeek,
+        callsConverted: callsThisWeekWithBooking,
+        conversionRate,
+      },
+      revenue: {
+        monthChargedCents: revenueAgg._sum.amountCents ?? 0,
+      },
+      recentCalls,
+      recentBookings,
+      topProviders,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  /** Paginated call-session list across all providers. */
+  async listCalls(opts: {
+    cursor?: string;
+    limit?: number;
+    fromPhone?: string;
+    hasBooking?: 'true' | 'false';
+  }) {
+    const limit = Math.min(opts.limit ?? 25, 100);
+    const where: Prisma.CallSessionWhereInput = {};
+    if (opts.cursor) where.id = { lt: opts.cursor };
+    if (opts.fromPhone) where.fromPhone = { contains: opts.fromPhone };
+    if (opts.hasBooking === 'true') where.bookingId = { not: null };
+    if (opts.hasBooking === 'false') where.bookingId = null;
+
+    const calls = await this.prisma.callSession.findMany({
+      where,
+      take: limit + 1,
+      orderBy: { startedAt: 'desc' },
+    });
+
+    const hasMore = calls.length > limit;
+    const data = hasMore ? calls.slice(0, limit) : calls;
+    return {
+      data,
+      meta: { cursor: hasMore ? data[data.length - 1].id : null, hasMore },
+    };
+  }
+
+  /** Cross-provider booking list with filters. */
+  async listBookings(opts: {
+    cursor?: string;
+    limit?: number;
+    providerId?: string;
+    status?: 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' | 'NO_SHOW';
+    from?: string;
+    to?: string;
+  }) {
+    const limit = Math.min(opts.limit ?? 25, 100);
+    const where: Prisma.BookingWhereInput = { isDeleted: false };
+    if (opts.cursor) where.id = { lt: opts.cursor };
+    if (opts.providerId) where.providerId = opts.providerId;
+    if (opts.status) where.status = opts.status;
+    if (opts.from || opts.to) {
+      where.slot = {};
+      if (opts.from) (where.slot as any).startsAt = { gte: new Date(opts.from) };
+      if (opts.to) {
+        (where.slot as any).startsAt = {
+          ...(where.slot as any).startsAt,
+          lte: new Date(opts.to),
+        };
+      }
+    }
+
+    const bookings = await this.prisma.booking.findMany({
+      where,
+      take: limit + 1,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        slot: { select: { startsAt: true, endsAt: true } },
+        provider: { select: { id: true, name: true, city: true } },
+        customer: { select: { id: true, name: true, phone: true } },
+      },
+    });
+
+    const hasMore = bookings.length > limit;
+    const data = hasMore ? bookings.slice(0, limit) : bookings;
+    return {
+      data,
+      meta: { cursor: hasMore ? data[data.length - 1].id : null, hasMore },
+    };
+  }
+
+  /** Provider list for SUPER_ADMIN — includes billing rollup. */
+  async listAllProviders(opts: { verticalId?: string; q?: string }) {
+    const where: Prisma.ProviderWhereInput = { isDeleted: false };
+    if (opts.verticalId) where.verticalId = opts.verticalId;
+    if (opts.q) where.OR = [
+      { name: { contains: opts.q, mode: 'insensitive' } },
+      { city: { contains: opts.q, mode: 'insensitive' } },
+      { email: { contains: opts.q, mode: 'insensitive' } },
+    ];
+
+    return this.prisma.provider.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        vertical: { select: { id: true, name: true, slug: true } },
+        billing: {
+          select: {
+            freeQuota: true,
+            freeBookingsUsed: true,
+            paidBookingsCount: true,
+            totalChargedCents: true,
+            chargePerBookingCents: true,
+          },
+        },
+        _count: { select: { bookings: true, staff: true } },
+      },
+    });
+  }
+
+  /** Providers whose owner hasn't accepted the invite yet. */
+  async listOnboardingPipeline() {
+    const pendingLinks = await this.prisma.magicLink.findMany({
+      where: {
+        purpose: 'ONBOARDING',
+        consumedAt: null,
+        expiresAt: { gte: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        staff: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            isActive: true,
+            provider: { select: { id: true, name: true, city: true } },
+          },
+        },
+      },
+    });
+
+    return pendingLinks.map((link) => ({
+      magicLinkId: link.id,
+      email: link.email,
+      createdAt: link.createdAt,
+      expiresAt: link.expiresAt,
+      staff: link.staff,
+    }));
   }
 }

@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   Res,
   Req,
@@ -19,6 +20,7 @@ import { StaffLoginDto } from './dto/staff-login.dto';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentTenant } from '../common/decorators/current-tenant.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { TenantInterceptor } from '../tenant/tenant.interceptor';
 import { SkipTenant } from '../tenant/skip-tenant.decorator';
@@ -104,6 +106,16 @@ export class AuthController {
     res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS);
 
     return { accessToken: result.accessToken };
+  }
+
+  // Session probe — drives role-based UI in the portal. SUPER_ADMIN sees
+  // admin nav, providers see clinic nav, etc. The role is in the JWT already
+  // but the portal also needs name/email/provider details.
+  @UseGuards(JwtAuthGuard)
+  @SkipTenant()
+  @Get('me')
+  async me(@CurrentUser() user: JwtPayload) {
+    return this.authService.getMe(user);
   }
 
   @UseGuards(JwtAuthGuard)

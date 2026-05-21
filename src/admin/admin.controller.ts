@@ -5,6 +5,7 @@ import {
   Patch,
   Body,
   Param,
+  Query,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -110,5 +111,49 @@ export class AdminController {
   @Post('providers/staff/:staffId/resend-invite')
   resendProviderInvite(@Param('staffId') staffId: string) {
     return this.adminService.resendProviderInvite(staffId);
+  }
+
+  // ─── Unified SUPER_ADMIN dashboard ────────────────────────────────────────
+
+  @Get('overview')
+  overview() {
+    return this.adminService.getAdminOverview();
+  }
+
+  @Get('calls')
+  listCalls(
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: number,
+    @Query('fromPhone') fromPhone?: string,
+    @Query('hasBooking') hasBooking?: 'true' | 'false',
+  ) {
+    return this.adminService.listCalls({ cursor, limit, fromPhone, hasBooking });
+  }
+
+  @Get('bookings')
+  listBookings(
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: number,
+    @Query('providerId') providerId?: string,
+    @Query('status') status?: 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' | 'NO_SHOW',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.adminService.listBookings({
+      cursor, limit, providerId, status, from, to,
+    });
+  }
+
+  @Get('providers/list')
+  listAllProviders(
+    @Query('verticalId') verticalId?: string,
+    @Query('q') q?: string,
+  ) {
+    return this.adminService.listAllProviders({ verticalId, q });
+  }
+
+  @Get('onboarding-pipeline')
+  onboardingPipeline() {
+    return this.adminService.listOnboardingPipeline();
   }
 }
