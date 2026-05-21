@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# environment variables — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Prisma migrations (keep schema, keep migrations history, ignore generated client)
+# Actually keep migrations so DB state is reproducible
+# prisma/migrations/ — DO NOT ignore
+
+# logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# test coverage
+coverage/
+
+# TypeScript incremental compilation
+*.tsbuildinfo

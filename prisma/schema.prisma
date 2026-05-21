@@ -1,0 +1,289 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  PROVIDER_OWNER
+  PROVIDER_STAFF
+  CUSTOMER
+}
+
+enum SlotStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+  BLOCKED
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+// ─── Core Tenant / Vertical ───────────────────────────────────────────────────
+
+model Vertical {
+  id     String @id @default(cuid())
+  name   String @unique
+  slug   String @unique
+  // JSON shape: { providerLabel, customerLabel, subjectLabel, extraFieldsSchema, greeting, systemPrompt }
+  config Json
+
+  tenants Tenant[]
+}
+
+model Tenant {
+  id         String  @id @default(cuid())
+  name       String
+  slug       String  @unique
+  subdomain  String  @unique
+  apiKey     String  @unique
+  verticalId String
+  vertical   Vertical @relation(fields: [verticalId], references: [id])
+  isActive   Boolean @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  retellAgents  RetellAgent[]
+  providers     Provider[]
+  providerStaff ProviderStaff[]
+  schedules     ProviderSchedule[]
+  slots         Slot[]
+  customers     Customer[]
+  subjects      Subject[]
+  bookings      Booking[]
+  callSessions  CallSession[]
+  refreshTokens RefreshToken[]
+
+  @@index([apiKey])
+  @@index([subdomain])
+}
+
+model RetellAgent {
+  id       String @id @default(cuid())
+  agentId  String @unique
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([agentId])
+}
+
+// ─── Provider ─────────────────────────────────────────────────────────────────
+
+model Provider {
+  id         String    @id @default(cuid())
+  tenantId   String
+  tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  name       String
+  address    String
+  city       String
+  province   String    @default("ON")
+  postalCode String
+  lat        Float
+  lng        Float
+  phone      String
+  email      String
+  bio        String?
+  isActive   Boolean   @default(true)
+  isDeleted  Boolean   @default(false)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  staff     ProviderStaff[]
+  schedules ProviderSchedule[]
+  slots     Slot[]
+  bookings  Booking[]
+
+  @@index([tenantId])
+  @@index([tenantId, isDeleted])
+  @@index([tenantId, isActive, isDeleted])
+}
+
+model ProviderSchedule {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  tenant              Tenant   @relation(fields: [tenantId], references: [id])
+  providerId          String
+  provider            Provider @relation(fields: [providerId], references: [id])
+  dayOfWeek           Int      // 0=Sunday … 6=Saturday
+  startTime           String   // "09:00"
+  endTime             String   // "17:00"
+  slotDurationMinutes Int      @default(30)
+  isActive            Boolean  @default(true)
+
+  @@index([tenantId, providerId])
+}
+
+model ProviderStaff {
+  id           String    @id @default(cuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  providerId   String
+  provider     Provider  @relation(fields: [providerId], references: [id])
+  email        String
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         Role      @default(PROVIDER_STAFF)
+  isActive     Boolean   @default(true)
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([tenantId, email])
+}
+
+// ─── Slots ────────────────────────────────────────────────────────────────────
+
+model Slot {
+  id         String     @id @default(cuid())
+  tenantId   String
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  providerId String
+  provider   Provider   @relation(fields: [providerId], references: [id])
+  startsAt   DateTime
+  endsAt     DateTime
+  status     SlotStatus @default(AVAILABLE)
+  heldBy     String?    // customerId holding this slot
+  heldAt     DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  booking Booking?
+
+  @@unique([tenantId, providerId, startsAt])
+  @@index([tenantId, providerId, startsAt, status])
+  @@index([tenantId, status])
+}
+
+// ─── Customer / Subject ───────────────────────────────────────────────────────
+
+model Customer {
+  id        String    @id @default(cuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  phone     String
+  name      String?
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  subjects      Subject[]
+  bookings      Booking[]
+  refreshTokens RefreshToken[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId])
+  @@index([tenantId, phone])
+}
+
+model Subject {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id])
+  name        String
+  type        String    // "dog", "cat", "tooth", "car", etc.
+  extraFields Json      @default("{}")
+  isDeleted   Boolean   @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  bookings Booking[]
+
+  @@index([tenantId, customerId])
+}
+
+// ─── Booking ──────────────────────────────────────────────────────────────────
+
+model Booking {
+  id          String        @id @default(cuid())
+  tenantId    String
+  tenant      Tenant        @relation(fields: [tenantId], references: [id])
+  slotId      String        @unique
+  slot        Slot          @relation(fields: [slotId], references: [id])
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  providerId  String
+  provider    Provider      @relation(fields: [providerId], references: [id])
+  subjectId   String?
+  subject     Subject?      @relation(fields: [subjectId], references: [id])
+  status      BookingStatus @default(CONFIRMED)
+  // Vertical-specific data (pet species, treatment type, car make, etc.)
+  extraFields Json          @default("{}")
+  notes       String?
+  cancelledAt DateTime?
+  completedAt DateTime?
+  isDeleted   Boolean       @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  callSession CallSession?
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, customerId])
+  @@index([tenantId, providerId])
+  @@index([tenantId, createdAt])
+}
+
+// ─── Voice / Call ─────────────────────────────────────────────────────────────
+
+model CallSession {
+  id         String    @id @default(cuid())
+  tenantId   String
+  tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  callId     String    @unique
+  agentId    String
+  fromPhone  String
+  transcript String?
+  summary    String?
+  durationMs Int?
+  bookingId  String?   @unique
+  booking    Booking?  @relation(fields: [bookingId], references: [id])
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+
+  @@index([tenantId])
+  @@index([tenantId, fromPhone])
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+model RefreshToken {
+  id         String         @id @default(cuid())
+  token      String         @unique
+  tenantId   String
+  tenant     Tenant         @relation(fields: [tenantId], references: [id])
+  customerId String?
+  customer   Customer?      @relation(fields: [customerId], references: [id])
+  staffId    String?
+  staff      ProviderStaff? @relation(fields: [staffId], references: [id])
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime       @default(now())
+
+  @@index([token])
+  @@index([tenantId])
+}
