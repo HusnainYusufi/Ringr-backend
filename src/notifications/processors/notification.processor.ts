@@ -20,6 +20,7 @@ export class NotificationProcessor {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
+    @InjectQueue('notifications') private readonly notificationsQueue: Queue,
     @InjectQueue('reminders') private readonly remindersQueue: Queue,
   ) {}
 
@@ -110,8 +111,11 @@ export class NotificationProcessor {
 
   @OnEvent('booking.confirmed')
   async onBookingConfirmed(payload: { booking: any; tenantId: string }) {
-    // Queue the notification so the voice tool response returns immediately
-    await this.remindersQueue.add(
+    // Queue the notification so the voice tool response returns immediately.
+    // Must enqueue to the 'notifications' queue — that's where this processor's
+    // @Process handlers live. Earlier code enqueued to 'reminders' and the jobs
+    // were silently dropped (no matching processor on that queue).
+    await this.notificationsQueue.add(
       'send-booking-confirmation',
       { bookingId: payload.booking.id, tenantId: payload.tenantId, type: 'confirmation' },
       { attempts: 3, backoff: 30000 },
@@ -120,7 +124,7 @@ export class NotificationProcessor {
 
   @OnEvent('booking.cancelled')
   async onBookingCancelled(payload: { booking: any; tenantId: string }) {
-    await this.remindersQueue.add(
+    await this.notificationsQueue.add(
       'send-booking-cancellation',
       { bookingId: payload.booking.id, tenantId: payload.tenantId, type: 'cancellation' },
       { attempts: 3, backoff: 30000 },

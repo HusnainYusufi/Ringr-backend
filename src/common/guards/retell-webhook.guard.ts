@@ -20,7 +20,14 @@ export class RetellWebhookGuard implements CanActivate {
     const webhookSecret = this.configService.get<string>('retell.webhookSecret');
 
     if (!webhookSecret) {
-      this.logger.warn('RETELL_WEBHOOK_SECRET not set — skipping HMAC verification');
+      // Fail closed in production. A missing secret is a deployment misconfiguration,
+      // not a free pass — silently allowing requests would let anyone forge webhook
+      // traffic from the public internet.
+      if (this.configService.get<string>('nodeEnv') === 'production') {
+        this.logger.error('RETELL_WEBHOOK_SECRET not set in production — rejecting webhook');
+        throw new UnauthorizedException('Webhook verification not configured');
+      }
+      this.logger.warn('RETELL_WEBHOOK_SECRET not set — skipping HMAC verification (non-production only)');
       return true;
     }
 

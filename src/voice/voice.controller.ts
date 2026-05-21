@@ -7,6 +7,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { VoiceService } from './voice.service';
 import { RetellWebhookGuard } from '../common/guards/retell-webhook.guard';
 import { TenantInterceptor } from '../tenant/tenant.interceptor';
@@ -30,6 +31,10 @@ import type Redis from 'ioredis';
 
 @Controller('voice')
 @Public()
+// HMAC-authenticated webhooks from a small pool of Retell IPs — IP-based
+// throttling would either be ineffective (Retell shares egress) or starve
+// legitimate traffic during multi-tool calls.
+@SkipThrottle()
 @UseGuards(RetellWebhookGuard)
 @UseInterceptors(TenantInterceptor)
 export class VoiceController {

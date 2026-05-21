@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { BullModule } from '@nestjs/bull';
 import configuration from './config/configuration';
 import { PrismaModule } from './prisma/prisma.module';
@@ -16,6 +17,7 @@ import { CustomersModule } from './customers/customers.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AdminModule } from './admin/admin.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { BillingModule } from './billing/billing.module';
 
 @Module({
   imports: [
@@ -63,6 +65,12 @@ import { AnalyticsModule } from './analytics/analytics.module';
     NotificationsModule,
     AdminModule,
     AnalyticsModule,
+    BillingModule,
+  ],
+  providers: [
+    // Apply rate limiting to every route by default. Sensitive endpoints
+    // (OTP, login) override with tighter @Throttle; Retell webhooks @SkipThrottle.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule {}

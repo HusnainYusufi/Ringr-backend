@@ -40,31 +40,36 @@ model Vertical {
   // JSON shape: { providerLabel, customerLabel, subjectLabel, extraFieldsSchema, greeting, systemPrompt }
   config Json
 
-  tenants Tenant[]
+  tenants   Tenant[]
+  providers Provider[]
 }
 
 model Tenant {
-  id         String  @id @default(cuid())
+  id         String   @id @default(cuid())
   name       String
-  slug       String  @unique
-  subdomain  String  @unique
-  apiKey     String  @unique
+  slug       String   @unique
+  subdomain  String   @unique
+  apiKey     String   @unique
   verticalId String
   vertical   Vertical @relation(fields: [verticalId], references: [id])
-  isActive   Boolean @default(true)
+  isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  retellAgents  RetellAgent[]
-  providers     Provider[]
-  providerStaff ProviderStaff[]
-  schedules     ProviderSchedule[]
-  slots         Slot[]
-  customers     Customer[]
-  subjects      Subject[]
-  bookings      Booking[]
-  callSessions  CallSession[]
-  refreshTokens RefreshToken[]
+  retellAgents    RetellAgent[]
+  providers       Provider[]
+  providerStaff   ProviderStaff[]
+  schedules       ProviderSchedule[]
+  slots           Slot[]
+  customers       Customer[]
+  subjects        Subject[]
+  bookings        Booking[]
+  callSessions    CallSession[]
+  refreshTokens   RefreshToken[]
+  magicLinks      MagicLink[]
+  blackouts       ProviderBlackout[]
+  providerBilling ProviderBilling[]
+  billingLedger   BillingLedgerEntry[]
 
   @@index([apiKey])
   @@index([subdomain])
@@ -85,6 +90,11 @@ model Provider {
   id         String    @id @default(cuid())
   tenantId   String
   tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  // Service classification (vet, dental, auto, ...). The AI agent uses this to
+  // filter providers based on what the caller asks for. Optional only because
+  // the migration is non-destructive — new providers must always set this.
+  verticalId String?
+  vertical   Vertical? @relation(fields: [verticalId], references: [id])
   name       String
   address    String
   city       String
@@ -105,10 +115,34 @@ model Provider {
   schedules ProviderSchedule[]
   slots     Slot[]
   bookings  Booking[]
+  blackouts ProviderBlackout[]
+  billing   ProviderBilling?
 
   @@index([tenantId])
   @@index([tenantId, isDeleted])
   @@index([tenantId, isActive, isDeleted])
+  @@index([verticalId])
+}
+
+// A date range during which the provider is unavailable (vacation, public
+// holiday, equipment outage…). Used by the slot generator (skip dates inside
+// a blackout) and the create-blackout flow (mark existing AVAILABLE slots
+// inside the range as BLOCKED so the AI agent can't book them).
+model ProviderBlackout {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id])
+  // [startsAt, endsAt) — endsAt is exclusive so a single-day blackout is
+  // startsAt=2026-08-05T00:00, endsAt=2026-08-06T00:00.
+  startsAt   DateTime
+  endsAt     DateTime
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, providerId])
+  @@index([providerId, startsAt, endsAt])
 }
 
 model ProviderSchedule {
@@ -117,9 +151,9 @@ model ProviderSchedule {
   tenant              Tenant   @relation(fields: [tenantId], references: [id])
   providerId          String
   provider            Provider @relation(fields: [providerId], references: [id])
-  dayOfWeek           Int      // 0=Sunday … 6=Saturday
-  startTime           String   // "09:00"
-  endTime             String   // "17:00"
+  dayOfWeek           Int // 0=Sunday … 6=Saturday
+  startTime           String // "09:00"
+  endTime             String // "17:00"
   slotDurationMinutes Int      @default(30)
   isActive            Boolean  @default(true)
 
@@ -144,6 +178,7 @@ model ProviderStaff {
   updatedAt    DateTime  @updatedAt
 
   refreshTokens RefreshToken[]
+  magicLinks    MagicLink[]
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -161,7 +196,7 @@ model Slot {
   startsAt   DateTime
   endsAt     DateTime
   status     SlotStatus @default(AVAILABLE)
-  heldBy     String?    // customerId holding this slot
+  heldBy     String? // customerId holding this slot
   heldAt     DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
@@ -202,7 +237,7 @@ model Subject {
   customerId  String
   customer    Customer  @relation(fields: [customerId], references: [id])
   name        String
-  type        String    // "dog", "cat", "tooth", "car", etc.
+  type        String // "dog", "cat", "tooth", "car", etc.
   extraFields Json      @default("{}")
   isDeleted   Boolean   @default(false)
   deletedAt   DateTime?
@@ -286,4 +321,72 @@ model RefreshToken {
 
   @@index([token])
   @@index([tenantId])
+}
+
+// Single-use, time-bound invitation tokens emailed to onboarded provider owners
+// so they can set their initial password without us shipping plaintext creds.
+model MagicLink {
+  id         String        @id @default(cuid())
+  token      String        @unique
+  tenantId   String
+  tenant     Tenant        @relation(fields: [tenantId], references: [id])
+  staffId    String
+  staff      ProviderStaff @relation(fields: [staffId], references: [id])
+  email      String
+  purpose    String        @default("ONBOARDING") // ONBOARDING | PASSWORD_RESET
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime      @default(now())
+
+  @@index([token])
+  @@index([staffId])
+  @@index([tenantId])
+}
+
+// ─── Billing ──────────────────────────────────────────────────────────────────
+//
+// One row per provider. Created automatically when a provider is onboarded.
+// First `freeQuota` completed bookings are free; every completed booking after
+// that accrues `chargePerBookingCents`. Charges are recorded as ledger entries
+// (BillingLedgerEntry) so the SUPER_ADMIN dashboard can show a history.
+//
+// v1 uses a flat fee per booking. To switch to a percentage of booking value
+// later, add `Booking.amountCents` and recompute the entry amount.
+model ProviderBilling {
+  id                    String    @id @default(cuid())
+  tenantId              String
+  tenant                Tenant    @relation(fields: [tenantId], references: [id])
+  providerId            String    @unique
+  provider              Provider  @relation(fields: [providerId], references: [id])
+  freeQuota             Int       @default(20)
+  freeBookingsUsed      Int       @default(0)
+  paidBookingsCount     Int       @default(0)
+  chargePerBookingCents Int       @default(500) // $5.00 default; tunable per provider
+  totalChargedCents     Int       @default(0)
+  lastChargedAt         DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  ledgerEntries BillingLedgerEntry[]
+
+  @@index([tenantId])
+}
+
+model BillingLedgerEntry {
+  id          String          @id @default(cuid())
+  tenantId    String
+  tenant      Tenant          @relation(fields: [tenantId], references: [id])
+  providerId  String
+  billingId   String
+  billing     ProviderBilling @relation(fields: [billingId], references: [id])
+  // One ledger entry per booking event — unique guard against double-charge if
+  // booking.completed fires twice.
+  bookingId   String          @unique
+  type        String // FREE | CHARGE | CREDIT | ADJUSTMENT
+  amountCents Int             @default(0)
+  description String?
+  createdAt   DateTime        @default(now())
+
+  @@index([tenantId, providerId])
+  @@index([providerId, createdAt])
 }

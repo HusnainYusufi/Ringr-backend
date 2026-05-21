@@ -1,4 +1,12 @@
-import { IsString, IsEmail, IsPhoneNumber, IsNumber, IsOptional, Min, Max } from 'class-validator';
+import {
+  IsString,
+  IsEmail,
+  IsPhoneNumber,
+  IsNumber,
+  IsOptional,
+  Min,
+  Max,
+} from 'class-validator';
 
 export class CreateProviderDto {
   @IsString()
@@ -16,13 +24,16 @@ export class CreateProviderDto {
   @IsString()
   postalCode: string;
 
+  // lat/lng are optional now — if omitted, the service geocodes from postalCode.
+  @IsOptional()
   @IsNumber()
   @Min(-90) @Max(90)
-  lat: number;
+  lat?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(-180) @Max(180)
-  lng: number;
+  lng?: number;
 
   @IsPhoneNumber()
   phone: string;
@@ -33,4 +44,8 @@ export class CreateProviderDto {
   @IsOptional()
   @IsString()
   bio?: string;
+
+  @IsOptional()
+  @IsString()
+  verticalId?: string;
 }

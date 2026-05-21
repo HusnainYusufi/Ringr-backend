@@ -33,9 +33,27 @@ export default () => ({
     verifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID,
   },
 
-  resend: {
-    apiKey: process.env.RESEND_API_KEY,
-    fromEmail: process.env.RESEND_FROM_EMAIL || 'noreply@ringr.ca',
+  // SMTP / nodemailer (Gmail by default). The Gmail "App Password" goes into
+  // SMTP_PASS — NEVER a real Google account password.
+  smtp: {
+    service: process.env.SMTP_SERVICE || 'gmail',
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT, 10) || 465,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    fromEmail: process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || 'noreply@ringr.ca',
+  },
+
+  // Base URL the portal serves the "accept-invite" page on. Used by the email
+  // template to build the magic-link URL. The token is appended as a path param.
+  portal: {
+    baseUrl: process.env.PORTAL_BASE_URL || 'http://localhost:3001',
+    inviteAcceptPath: process.env.PORTAL_INVITE_PATH || '/accept-invite',
+  },
+
+  magicLink: {
+    // 7 days — onboarding emails often get opened late.
+    expirySeconds: parseInt(process.env.MAGIC_LINK_EXPIRY_SECONDS, 10) || 7 * 24 * 60 * 60,
   },
 
   googleMaps: {

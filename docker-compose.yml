@@ -1,20 +1,30 @@
 version: '3.9'
 
+# Full stack: API + Postgres + Redis.
+#
+# Usage:
+#   cp .env.example .env  # then fill in real secrets
+#   docker compose up -d --build
+#
+# The `api` service depends on healthy Postgres + Redis before starting, and its
+# entrypoint waits for the DB, runs `prisma migrate deploy`, and (if RUN_SEEDS=true)
+# runs the seed before booting Nest.
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: ringr-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: ringr
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ringr}
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ringr}']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,6 +42,34 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ringr-backend:latest
+    container_name: ringr-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override the .env DATABASE_URL / REDIS_HOST to point inside the compose network.
+      # The .env file is still loaded for app-level config (JWT secrets, Twilio, etc.).
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ringr}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      # Opt-in seeding — leave unset/false in production.
+      RUN_SEEDS: ${RUN_SEEDS:-false}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+    ports:
+      - '${API_PORT:-3000}:3000'
 
 volumes:
   postgres_data:

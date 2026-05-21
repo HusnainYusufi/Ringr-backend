@@ -13,10 +13,17 @@ import {
 import { ProvidersService } from './providers.service';
 import { CreateProviderDto } from './dto/create-provider.dto';
 import { GenerateSlotsDto } from './dto/generate-slots.dto';
+import {
+  CreateScheduleDto,
+  UpdateScheduleDto,
+  ReplaceWeekScheduleDto,
+} from './dto/schedule.dto';
+import { CreateBlackoutDto } from './dto/blackout.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentTenant } from '../common/decorators/current-tenant.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { TenantInterceptor } from '../tenant/tenant.interceptor';
 import { Tenant, Role, SlotStatus } from '@prisma/client';
 
@@ -30,6 +37,21 @@ export class ProvidersController {
   @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.PROVIDER_STAFF, Role.SUPER_ADMIN)
   findAll(@CurrentTenant() tenant: Tenant) {
     return this.providersService.findAll(tenant.id);
+  }
+
+  // ─── "Me" routes — declared BEFORE :id so /me isn't matched as an id ──────
+  // (Nest matches in declaration order for the same HTTP method.)
+
+  @Get('me')
+  @Roles(Role.PROVIDER_OWNER, Role.PROVIDER_STAFF)
+  findMyProvider(@CurrentUser() user: JwtPayload, @CurrentTenant() tenant: Tenant) {
+    return this.providersService.findMyProvider(user, tenant.id);
+  }
+
+  @Get('me/dashboard')
+  @Roles(Role.PROVIDER_OWNER, Role.PROVIDER_STAFF)
+  myDashboard(@CurrentUser() user: JwtPayload, @CurrentTenant() tenant: Tenant) {
+    return this.providersService.myDashboard(user, tenant.id);
   }
 
   @Post()
@@ -93,5 +115,84 @@ export class ProvidersController {
     @CurrentTenant() tenant: Tenant,
   ) {
     return this.providersService.updateSlot(providerId, slotId, status, tenant.id);
+  }
+
+  // ─── Schedule CRUD ───────────────────────────────────────────────────────
+
+  @Get(':id/schedules')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.PROVIDER_STAFF, Role.SUPER_ADMIN)
+  listSchedules(@Param('id') id: string, @CurrentTenant() tenant: Tenant) {
+    return this.providersService.listSchedules(id, tenant.id);
+  }
+
+  @Post(':id/schedules')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.SUPER_ADMIN)
+  createSchedule(
+    @Param('id') id: string,
+    @Body() dto: CreateScheduleDto,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.createSchedule(id, dto, tenant.id);
+  }
+
+  @Patch(':id/schedules/:scheduleId')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.SUPER_ADMIN)
+  updateSchedule(
+    @Param('id') id: string,
+    @Param('scheduleId') scheduleId: string,
+    @Body() dto: UpdateScheduleDto,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.updateSchedule(id, scheduleId, dto, tenant.id);
+  }
+
+  @Delete(':id/schedules/:scheduleId')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.SUPER_ADMIN)
+  deleteSchedule(
+    @Param('id') id: string,
+    @Param('scheduleId') scheduleId: string,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.deleteSchedule(id, scheduleId, tenant.id);
+  }
+
+  // Convenience endpoint for the portal "set opening hours" page — replaces
+  // the entire weekly schedule in one transaction.
+  @Post(':id/schedules/replace-week')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.SUPER_ADMIN)
+  replaceWeekSchedule(
+    @Param('id') id: string,
+    @Body() dto: ReplaceWeekScheduleDto,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.replaceWeekSchedule(id, dto, tenant.id);
+  }
+
+  // ─── Blackouts (vacation / closures) ─────────────────────────────────────
+
+  @Get(':id/blackouts')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.PROVIDER_STAFF, Role.SUPER_ADMIN)
+  listBlackouts(@Param('id') id: string, @CurrentTenant() tenant: Tenant) {
+    return this.providersService.listBlackouts(id, tenant.id);
+  }
+
+  @Post(':id/blackouts')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.SUPER_ADMIN)
+  createBlackout(
+    @Param('id') id: string,
+    @Body() dto: CreateBlackoutDto,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.createBlackout(id, dto, tenant.id);
+  }
+
+  @Delete(':id/blackouts/:blackoutId')
+  @Roles(Role.TENANT_ADMIN, Role.PROVIDER_OWNER, Role.SUPER_ADMIN)
+  deleteBlackout(
+    @Param('id') id: string,
+    @Param('blackoutId') blackoutId: string,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.deleteBlackout(id, blackoutId, tenant.id);
   }
 }

@@ -8,6 +8,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtPayload } from '../common/decorators/current-user.decorator';
@@ -118,7 +119,7 @@ export class AuthService {
   async refresh(
     refreshToken: string,
     tenant: Tenant,
-  ): Promise<{ accessToken: string }> {
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     const stored = await this.prisma.refreshToken.findFirst({
       where: { token: refreshToken, revokedAt: null },
       include: { customer: true, staff: true },
@@ -147,8 +148,28 @@ export class AuthService {
       };
     }
 
-    const accessToken = this.signAccessToken(payload);
-    return { accessToken };
+    // Rotate: revoke the presented token and issue a fresh pair atomically.
+    // Without rotation a stolen refresh token is valid for the full 7d window.
+    const [, tokens] = await this.prisma.$transaction([
+      this.prisma.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.refreshToken.create({
+        data: {
+          token: uuidv4(),
+          tenantId: tenant.id,
+          customerId: stored.customerId,
+          staffId: stored.staffId,
+          expiresAt: this.refreshTokenExpiry(),
+        },
+      }),
+    ]);
+
+    return {
+      accessToken: this.signAccessToken(payload),
+      refreshToken: tokens.token,
+    };
   }
 
   async logout(refreshToken: string): Promise<void> {
@@ -156,6 +177,67 @@ export class AuthService {
       where: { token: refreshToken },
       data: { revokedAt: new Date() },
     });
+  }
+
+  // ─── Accept magic-link invite ──────────────────────────────────────────────
+
+  /**
+   * Provider owner clicks the email link, lands on /accept-invite, posts
+   * { token, password }. We validate the token, set the staff password,
+   * activate the account, and issue tokens so they're logged straight into
+   * the dashboard.
+   */
+  async acceptInvite(
+    token: string,
+    newPassword: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    const link = await this.prisma.magicLink.findUnique({
+      where: { token },
+      include: { staff: true },
+    });
+
+    if (!link || link.consumedAt || link.expiresAt < new Date()) {
+      throw new UnauthorizedException('Invite is invalid or expired');
+    }
+    if (!link.staff) {
+      // FK guarantee — but the type is nullable. Defensive.
+      throw new UnauthorizedException('Invite is invalid');
+    }
+    if (link.staff.isDeleted) {
+      throw new UnauthorizedException('Invite is invalid');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    // Atomic: set password, mark staff active, burn the token.
+    const [updatedStaff] = await this.prisma.$transaction([
+      this.prisma.providerStaff.update({
+        where: { id: link.staffId },
+        data: { passwordHash, isActive: true },
+      }),
+      this.prisma.magicLink.update({
+        where: { id: link.id },
+        data: { consumedAt: new Date() },
+      }),
+      // Burn any other outstanding invites for this staff member.
+      this.prisma.magicLink.updateMany({
+        where: { staffId: link.staffId, consumedAt: null, id: { not: link.id } },
+        data: { consumedAt: new Date() },
+      }),
+    ]);
+
+    return this.issueTokens(
+      {
+        sub: updatedStaff.id,
+        tenantId: updatedStaff.tenantId,
+        role: updatedStaff.role,
+        providerId: updatedStaff.providerId,
+        type: 'staff',
+      },
+      null,
+      updatedStaff.id,
+      updatedStaff.tenantId,
+    );
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -169,8 +251,6 @@ export class AuthService {
     const accessToken = this.signAccessToken(payload);
 
     const refreshTokenValue = uuidv4();
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
 
     await this.prisma.refreshToken.create({
       data: {
@@ -178,11 +258,17 @@ export class AuthService {
         tenantId,
         customerId,
         staffId,
-        expiresAt,
+        expiresAt: this.refreshTokenExpiry(),
       },
     });
 
     return { accessToken, refreshToken: refreshTokenValue };
+  }
+
+  private refreshTokenExpiry(): Date {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    return d;
   }
 
   private signAccessToken(payload: JwtPayload): string {
@@ -193,7 +279,8 @@ export class AuthService {
   }
 
   private generateOtp(): string {
-    return String(Math.floor(100000 + Math.random() * 900000));
+    // crypto.randomInt is uniformly distributed and CSPRNG-backed; Math.random is neither.
+    return String(crypto.randomInt(100000, 1000000));
   }
 
   private otpKey(tenantId: string, phone: string): string {

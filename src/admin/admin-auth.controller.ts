@@ -6,14 +6,17 @@ import {
   HttpCode,
   HttpStatus,
   UnauthorizedException,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { IsEmail, IsString } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service';
 import { Public } from '../common/decorators/public.decorator';
+import { TenantBypassInterceptor } from '../tenant/tenant-bypass.interceptor';
 import { Role } from '@prisma/client';
 
 class AdminLoginDto {
@@ -28,6 +31,7 @@ class AdminLoginDto {
 // For simplicity: SUPER_ADMIN is a ProviderStaff with role=SUPER_ADMIN and no providerId constraint.
 
 @Controller('admin/auth')
+@UseInterceptors(TenantBypassInterceptor)
 export class AdminAuthController {
   constructor(
     private readonly prisma: PrismaService,
@@ -36,6 +40,7 @@ export class AdminAuthController {
   ) {}
 
   @Public()
+  @Throttle({ short: { limit: 3, ttl: 60_000 }, long: { limit: 10, ttl: 60 * 60_000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: AdminLoginDto, @Res({ passthrough: true }) res: Response) {

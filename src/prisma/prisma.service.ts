@@ -22,13 +22,31 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
     });
 
-    // Tenant isolation middleware — automatically scopes every query to the active tenant
+    // Tenant isolation middleware — automatically scopes every query to the active tenant.
+    //
+    // Defense in depth: if a request touches a tenant-scoped model without setting up
+    // the tenant context (e.g. a new controller forgets @UseInterceptors(TenantInterceptor)),
+    // we refuse the query rather than silently returning cross-tenant data. The only
+    // legitimate way to query without a tenantId is to set `bypassTenant: true` in the
+    // store — currently used by the platform admin module.
     this.$use(async (params, next) => {
       const store = tenantStorage.getStore();
       const tenantId = store?.tenantId;
+      const bypass = store?.bypassTenant === true;
 
-      if (!tenantId || !TENANT_SCOPED_MODELS.has(params.model)) {
+      if (!TENANT_SCOPED_MODELS.has(params.model)) {
         return next(params);
+      }
+
+      if (bypass) {
+        return next(params);
+      }
+
+      if (!tenantId) {
+        throw new Error(
+          `Tenant context missing for query on ${params.model}.${params.action}. ` +
+            `Apply TenantInterceptor on the controller, or set bypassTenant for admin paths.`,
+        );
       }
 
       if (params.action === 'create') {

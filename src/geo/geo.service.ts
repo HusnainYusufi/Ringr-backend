@@ -7,6 +7,9 @@ import { Provider, Slot } from '@prisma/client';
 
 const SEARCH_RADIUS_KM = 25;
 const GEO_CACHE_TTL = 60 * 60 * 24 * 30; // 30 days in seconds
+// Voice agent is waiting on the line — a stalled geocode call holds the entire
+// conversation. Fail fast and fall back to demo coords rather than block.
+const GEOCODE_TIMEOUT_MS = 3_000;
 // Demo-mode fixed coordinate: Toronto downtown
 const DEMO_COORDINATE = { lat: 43.6532, lng: -79.3832 };
 
@@ -39,19 +42,31 @@ export class GeoService {
     const apiKey = this.config.get<string>('googleMaps.apiKey');
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(postalCode)}&components=country:CA&key=${apiKey}`;
 
-    const response = await fetch(url);
-    const data = await response.json();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEOCODE_TIMEOUT_MS);
 
-    if (data.status !== 'OK' || !data.results.length) {
-      this.logger.warn(`Geocoding failed for ${postalCode}: ${data.status}`);
-      return DEMO_COORDINATE; // Graceful fallback
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      const data = await response.json();
+
+      if (data.status !== 'OK' || !data.results.length) {
+        this.logger.warn(`Geocoding failed for ${postalCode}: ${data.status}`);
+        return DEMO_COORDINATE; // Graceful fallback
+      }
+
+      const { lat, lng } = data.results[0].geometry.location;
+      const coords = { lat, lng };
+
+      await this.redis.setex(cacheKey, GEO_CACHE_TTL, JSON.stringify(coords));
+      return coords;
+    } catch (err) {
+      this.logger.warn(
+        `Geocoding error for ${postalCode}: ${err instanceof Error ? err.message : err}`,
+      );
+      return DEMO_COORDINATE;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const { lat, lng } = data.results[0].geometry.location;
-    const coords = { lat, lng };
-
-    await this.redis.setex(cacheKey, GEO_CACHE_TTL, JSON.stringify(coords));
-    return coords;
   }
 
   // ─── Provider proximity search ────────────────────────────────────────────

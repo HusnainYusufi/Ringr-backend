@@ -1,0 +1,34 @@
+# Don't ship dev artifacts or secrets into the build context.
+
+node_modules
+dist
+coverage
+
+# Env files — secrets live in the runtime, not the image
+.env
+.env.local
+.env.*.local
+
+# Git / VCS
+.git
+.gitignore
+.gitattributes
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Docker meta (no point copying these into themselves)
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Claude / agent state
+.claude
+CLAUDE.md

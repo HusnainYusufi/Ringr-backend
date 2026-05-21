@@ -6,6 +6,7 @@ import {
   Body,
   Param,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import {
@@ -14,17 +15,21 @@ import {
   CreateVerticalDto,
   CreateTenantAdminDto,
 } from './dto/create-tenant.dto';
+import { OnboardProviderDto } from './dto/onboard-provider.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { TenantBypassInterceptor } from '../tenant/tenant-bypass.interceptor';
 import { Role } from '@prisma/client';
 
-// The admin portal authenticates using the SUPER_ADMIN JWT directly.
-// No TenantInterceptor here — SUPER_ADMIN operates across all tenants.
+// SUPER_ADMIN operates across all tenants. TenantBypassInterceptor sets the
+// AsyncLocalStorage bypass flag so the Prisma tenant middleware doesn't reject
+// the cross-tenant queries.
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SUPER_ADMIN)
+@UseInterceptors(TenantBypassInterceptor)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
@@ -91,5 +96,19 @@ export class AdminController {
     @Body() dto: CreateTenantAdminDto,
   ) {
     return this.adminService.createTenantAdmin(tenantId, providerId, dto);
+  }
+
+  // ─── Provider onboarding (marketplace flow) ────────────────────────────────
+
+  // Single-shot: create Provider + PROVIDER_OWNER + magic-link invite email.
+  @Post('providers/onboard')
+  onboardProvider(@Body() dto: OnboardProviderDto) {
+    return this.adminService.onboardProvider(dto);
+  }
+
+  // Generate a fresh magic link for an owner who hasn't accepted yet.
+  @Post('providers/staff/:staffId/resend-invite')
+  resendProviderInvite(@Param('staffId') staffId: string) {
+    return this.adminService.resendProviderInvite(staffId);
   }
 }
