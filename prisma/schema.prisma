@@ -31,6 +31,17 @@ enum BookingStatus {
   NO_SHOW
 }
 
+enum SubscriptionTier {
+  STARTER // API + webhooks only; no portal access. Free monthly fee, per-booking after the free quota.
+  PRO // API + webhooks + portal. Flat monthly fee.
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  PAST_DUE
+}
+
 // ─── Core Tenant / Vertical ───────────────────────────────────────────────────
 
 model Vertical {
@@ -56,20 +67,24 @@ model Tenant {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  retellAgents    RetellAgent[]
-  providers       Provider[]
-  providerStaff   ProviderStaff[]
-  schedules       ProviderSchedule[]
-  slots           Slot[]
-  customers       Customer[]
-  subjects        Subject[]
-  bookings        Booking[]
-  callSessions    CallSession[]
-  refreshTokens   RefreshToken[]
-  magicLinks      MagicLink[]
-  blackouts       ProviderBlackout[]
-  providerBilling ProviderBilling[]
-  billingLedger   BillingLedgerEntry[]
+  retellAgents      RetellAgent[]
+  providers         Provider[]
+  providerStaff     ProviderStaff[]
+  schedules         ProviderSchedule[]
+  slots             Slot[]
+  customers         Customer[]
+  subjects          Subject[]
+  bookings          Booking[]
+  callSessions      CallSession[]
+  refreshTokens     RefreshToken[]
+  magicLinks        MagicLink[]
+  blackouts         ProviderBlackout[]
+  providerBilling   ProviderBilling[]
+  billingLedger     BillingLedgerEntry[]
+  subscriptions     Subscription[]
+  providerApiKeys   ProviderApiKey[]
+  webhookEndpoints  WebhookEndpoint[]
+  webhookDeliveries WebhookDelivery[]
 
   @@index([apiKey])
   @@index([subdomain])
@@ -111,12 +126,15 @@ model Provider {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  staff     ProviderStaff[]
-  schedules ProviderSchedule[]
-  slots     Slot[]
-  bookings  Booking[]
-  blackouts ProviderBlackout[]
-  billing   ProviderBilling?
+  staff            ProviderStaff[]
+  schedules        ProviderSchedule[]
+  slots            Slot[]
+  bookings         Booking[]
+  blackouts        ProviderBlackout[]
+  billing          ProviderBilling?
+  subscription     Subscription?
+  apiKeys          ProviderApiKey[]
+  webhookEndpoints WebhookEndpoint[]
 
   @@index([tenantId])
   @@index([tenantId, isDeleted])
@@ -389,4 +407,115 @@ model BillingLedgerEntry {
 
   @@index([tenantId, providerId])
   @@index([providerId, createdAt])
+}
+
+// ─── Subscriptions ────────────────────────────────────────────────────────────
+//
+// One row per provider. STARTER providers use the API + webhooks only;
+// PRO providers additionally get the portal. Tier choice happens at onboarding
+// and can be changed by SUPER_ADMIN.
+model Subscription {
+  id                   String             @id @default(cuid())
+  tenantId             String
+  providerId           String             @unique
+  provider             Provider           @relation(fields: [providerId], references: [id])
+  tier                 SubscriptionTier   @default(STARTER)
+  status               SubscriptionStatus @default(ACTIVE)
+  // Stripe integration lands in Phase 6c; these are placeholders for now.
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodEnd     DateTime?
+  cancelledAt          DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  Tenant               Tenant             @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([tier])
+  @@index([status])
+}
+
+// ─── Provider API keys ────────────────────────────────────────────────────────
+//
+// Vendors (vet PMS systems etc.) authenticate to /api/v1/integrations/* with
+// these. Plaintext is only ever returned once at issuance time — we store
+// SHA-256 of the secret and a last-four for display.
+model ProviderApiKey {
+  id         String    @id @default(cuid())
+  tenantId   String
+  providerId String
+  provider   Provider  @relation(fields: [providerId], references: [id])
+  // Human-friendly label set at creation, e.g. "Production Vetspire integration".
+  name       String
+  // SHA-256 of the full secret. Lookups go through this so we never store the plaintext.
+  keyHash    String    @unique
+  // The prefix (first 8 chars of the secret) is safe to expose for UI display.
+  keyPrefix  String
+  // Last 4 chars of the plaintext for visual identification ("…a3f9").
+  lastFour   String
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  Tenant     Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@index([providerId])
+  @@index([tenantId])
+  @@index([keyPrefix])
+}
+
+// ─── Outbound webhooks ────────────────────────────────────────────────────────
+//
+// Where a provider's external system listens for booking events. Phase 6b
+// builds the dispatcher; this just lets us store endpoints + audit deliveries.
+model WebhookEndpoint {
+  id         String   @id @default(cuid())
+  tenantId   String
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id])
+  url        String
+  // Comma-separated event names the endpoint subscribes to.
+  // e.g. "booking.confirmed,booking.cancelled,booking.completed,booking.no_show"
+  events     String
+  // HMAC-SHA256 secret used to sign outgoing payloads. Returned only once at
+  // creation; stored encrypted-at-rest in a future hardening pass.
+  secret     String
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  deliveries WebhookDelivery[]
+  Tenant     Tenant            @relation(fields: [tenantId], references: [id])
+
+  @@index([providerId])
+  @@index([tenantId])
+  @@index([enabled])
+}
+
+model WebhookDelivery {
+  id           String          @id @default(cuid())
+  tenantId     String
+  tenant       Tenant          @relation(fields: [tenantId], references: [id])
+  endpointId   String
+  endpoint     WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  // Event name that triggered the delivery.
+  event        String
+  // Booking ID (or whatever the event payload's primary entity is) — for grouping
+  // and dedup. Unique-combined with event + endpoint to make retries safe.
+  resourceId   String
+  // Full JSON payload that was sent — for replay/debug.
+  payload      Json
+  // Last attempt result.
+  responseCode Int?
+  responseBody String?
+  attempts     Int             @default(0)
+  // Bull job lifecycle.
+  succeededAt  DateTime?
+  failedAt     DateTime?
+  nextRetryAt  DateTime?
+  createdAt    DateTime        @default(now())
+
+  @@unique([endpointId, event, resourceId])
+  @@index([tenantId])
+  @@index([endpointId, createdAt])
+  @@index([nextRetryAt])
 }

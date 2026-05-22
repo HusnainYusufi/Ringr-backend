@@ -192,7 +192,15 @@ export class AuthService {
         where: { id: payload.sub, isDeleted: false },
         include: {
           provider: {
-            select: { id: true, name: true, verticalId: true, isActive: true },
+            select: {
+              id: true,
+              name: true,
+              verticalId: true,
+              isActive: true,
+              // Tier drives portal gating client-side. STARTER staff are
+              // bounced to /upgrade; PRO get the full dashboard.
+              subscription: { select: { tier: true, status: true } },
+            },
           },
         },
       });
@@ -208,6 +216,7 @@ export class AuthService {
         tenantId: staff.tenantId,
         providerId: staff.providerId,
         provider: staff.provider,
+        subscription: staff.provider?.subscription ?? null,
       };
     }
 

@@ -6,9 +6,18 @@ import { AuthModule } from '../auth/auth.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { GeoModule } from '../geo/geo.module';
 import { BillingModule } from '../billing/billing.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { ApiKeysModule } from '../api-keys/api-keys.module';
 
 @Module({
-  imports: [AuthModule, NotificationsModule, GeoModule, BillingModule],
+  imports: [
+    AuthModule,
+    NotificationsModule,
+    GeoModule,
+    BillingModule,
+    SubscriptionsModule,
+    ApiKeysModule,
+  ],
   controllers: [AdminController, AdminAuthController],
   providers: [AdminService],
 })
