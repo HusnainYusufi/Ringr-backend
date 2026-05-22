@@ -76,6 +76,7 @@ export class GeoService {
     tenantId: string,
     date: Date,
     radiusKm = SEARCH_RADIUS_KM,
+    verticalSlug?: string,
   ): Promise<ProviderWithSlot[]> {
     const { lat, lng } = await this.geocodePostalCode(postalCode);
 
@@ -85,31 +86,69 @@ export class GeoService {
     const dayEnd = new Date(date);
     dayEnd.setHours(23, 59, 59, 999);
 
-    // Haversine distance formula in raw SQL — must run inside the DB for performance
-    const providers = await this.prisma.$queryRaw<
-      Array<{ id: string; distance_km: number }>
-    >`
-      SELECT
-        id,
-        (6371 * acos(
-          cos(radians(${lat})) * cos(radians(lat)) *
-          cos(radians(lng) - radians(${lng})) +
-          sin(radians(${lat})) * sin(radians(lat))
-        )) AS distance_km
-      FROM "Provider"
-      WHERE
-        "tenantId" = ${tenantId}
-        AND "isDeleted" = false
-        AND "isActive" = true
-      HAVING
-        (6371 * acos(
-          cos(radians(${lat})) * cos(radians(lat)) *
-          cos(radians(lng) - radians(${lng})) +
-          sin(radians(${lat})) * sin(radians(lat))
-        )) <= ${radiusKm}
-      ORDER BY distance_km ASC
-      LIMIT 10
-    `;
+    // Resolve vertical slug → id so the SQL filter can use the indexed FK.
+    // If the slug is unknown, no providers match (safer than ignoring it).
+    let verticalId: string | null = null;
+    if (verticalSlug) {
+      const vertical = await this.prisma.vertical.findUnique({
+        where: { slug: verticalSlug },
+        select: { id: true },
+      });
+      if (!vertical) {
+        this.logger.warn(`Unknown vertical slug "${verticalSlug}" — returning no providers`);
+        return [];
+      }
+      verticalId = vertical.id;
+    }
+
+    // Haversine distance formula in raw SQL — must run inside the DB for performance.
+    // Tagged-template params are parameterized by Prisma; safe against SQL injection.
+    const providers = verticalId
+      ? await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
+          SELECT
+            id,
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) AS distance_km
+          FROM "Provider"
+          WHERE
+            "tenantId" = ${tenantId}
+            AND "isDeleted" = false
+            AND "isActive" = true
+            AND "verticalId" = ${verticalId}
+          HAVING
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) <= ${radiusKm}
+          ORDER BY distance_km ASC
+          LIMIT 10
+        `
+      : await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
+          SELECT
+            id,
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) AS distance_km
+          FROM "Provider"
+          WHERE
+            "tenantId" = ${tenantId}
+            AND "isDeleted" = false
+            AND "isActive" = true
+          HAVING
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) <= ${radiusKm}
+          ORDER BY distance_km ASC
+          LIMIT 10
+        `;
 
     const results: ProviderWithSlot[] = [];
 

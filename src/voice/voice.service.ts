@@ -73,16 +73,24 @@ export class VoiceService {
   async findProviders(
     postalCode: string,
     tenant: Tenant,
+    verticalSlug?: string,
     subjectType?: string,
     visitReason?: string,
     preferredDate?: string,
   ): Promise<string> {
     const searchDate = preferredDate ? new Date(preferredDate) : new Date();
 
-    const results = await this.geo.findProvidersNear(postalCode, tenant.id, searchDate);
+    const results = await this.geo.findProvidersNear(
+      postalCode,
+      tenant.id,
+      searchDate,
+      undefined,
+      verticalSlug,
+    );
 
     if (results.length === 0) {
-      return `I couldn't find any available providers near ${postalCode} for that date. Would you like to try a different date or expand the search area?`;
+      const verticalNote = verticalSlug ? ` ${verticalSlug}` : '';
+      return `I couldn't find any available${verticalNote} providers near ${postalCode} for that date. Would you like to try a different date or expand the search area?`;
     }
 
     const formatted = results

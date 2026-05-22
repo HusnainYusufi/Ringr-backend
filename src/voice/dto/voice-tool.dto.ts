@@ -37,6 +37,14 @@ export class FindProvidersToolDto {
   call: RetellCallDto;
   @IsString()
   postal_code: string;
+  // The AI agent's first job is to ask which service the caller needs and
+  // pass the matching vertical slug here. Without this, a pet appointment
+  // could be routed to a dentist. Slugs are seeded as: veterinary, dental,
+  // automotive. Optional only for back-compat with the demo agent that
+  // doesn't ask; new agents must always send it.
+  @IsOptional()
+  @IsString()
+  vertical_slug?: string;
   @IsOptional()
   @IsString()
   subject_type?: string;

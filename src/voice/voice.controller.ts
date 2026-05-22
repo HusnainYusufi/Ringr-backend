@@ -100,6 +100,7 @@ export class VoiceController {
     const result = await this.voiceService.findProviders(
       body.postal_code,
       tenant,
+      body.vertical_slug,
       body.subject_type,
       body.visit_reason,
       body.preferred_date,
