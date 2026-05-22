@@ -13,6 +13,7 @@ import { RetellWebhookGuard } from '../common/guards/retell-webhook.guard';
 import { TenantInterceptor } from '../tenant/tenant.interceptor';
 import { CurrentTenant } from '../common/decorators/current-tenant.decorator';
 import { Public } from '../common/decorators/public.decorator';
+import { SkipTransform } from '../common/decorators/skip-transform.decorator';
 import { InjectRedis } from '../redis/redis.decorator';
 import {
   SendOtpToolDto,
@@ -35,6 +36,9 @@ import type Redis from 'ioredis';
 // throttling would either be ineffective (Retell shares egress) or starve
 // legitimate traffic during multi-tool calls.
 @SkipThrottle()
+// Bypass the global TransformInterceptor — Retell tools expect a fixed
+// top-level shape ({ result, customer_id, … }), not { data: {...}, meta }.
+@SkipTransform()
 @UseGuards(RetellWebhookGuard)
 @UseInterceptors(TenantInterceptor)
 export class VoiceController {
@@ -73,31 +77,33 @@ export class VoiceController {
 
   // ─── Voice tool endpoints ───────────────────────────────────────────────
 
+  // Each tool returns a full structured object. The `result` field is the
+  // conversational string the AI reads aloud; sibling fields (customer_id,
+  // slot_id, subject_id, options[], etc.) are extracted by the AI for use
+  // in subsequent tool calls.
+
   @Post('tools/send-otp')
   @HttpCode(HttpStatus.OK)
   async sendOtp(@Body() body: SendOtpToolDto, @CurrentTenant() tenant: Tenant) {
-    const result = await this.voiceService.sendOtp(body.phone, tenant, this.redis);
-    return { result };
+    return this.voiceService.sendOtp(body.phone, tenant, this.redis);
   }
 
   @Post('tools/verify-otp')
   @HttpCode(HttpStatus.OK)
   async verifyOtp(@Body() body: VerifyOtpToolDto, @CurrentTenant() tenant: Tenant) {
-    const result = await this.voiceService.verifyOtp(body.phone, body.code, tenant, this.redis);
-    return { result };
+    return this.voiceService.verifyOtp(body.phone, body.code, tenant, this.redis);
   }
 
   @Post('tools/get-subjects')
   @HttpCode(HttpStatus.OK)
   async getSubjects(@Body() body: GetSubjectsToolDto, @CurrentTenant() tenant: Tenant) {
-    const result = await this.voiceService.getSubjects(body.customer_id, tenant);
-    return { result };
+    return this.voiceService.getSubjects(body.customer_id, tenant);
   }
 
   @Post('tools/find-providers')
   @HttpCode(HttpStatus.OK)
   async findProviders(@Body() body: FindProvidersToolDto, @CurrentTenant() tenant: Tenant) {
-    const result = await this.voiceService.findProviders(
+    return this.voiceService.findProviders(
       body.postal_code,
       tenant,
       body.vertical_slug,
@@ -105,20 +111,18 @@ export class VoiceController {
       body.visit_reason,
       body.preferred_date,
     );
-    return { result };
   }
 
   @Post('tools/hold-slot')
   @HttpCode(HttpStatus.OK)
   async holdSlot(@Body() body: HoldSlotToolDto, @CurrentTenant() tenant: Tenant) {
-    const result = await this.voiceService.holdSlot(body.slot_id, body.customer_id, tenant);
-    return { result };
+    return this.voiceService.holdSlot(body.slot_id, body.customer_id, tenant);
   }
 
   @Post('tools/confirm-booking')
   @HttpCode(HttpStatus.OK)
   async confirmBooking(@Body() body: ConfirmBookingToolDto, @CurrentTenant() tenant: Tenant) {
-    const result = await this.voiceService.confirmBooking(
+    return this.voiceService.confirmBooking(
       body.slot_id,
       body.customer_id,
       tenant,
@@ -126,6 +130,5 @@ export class VoiceController {
       body.extra_fields,
       body.notes,
     );
-    return { result };
   }
 }

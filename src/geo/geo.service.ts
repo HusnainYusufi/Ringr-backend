@@ -13,6 +13,35 @@ const GEOCODE_TIMEOUT_MS = 3_000;
 // Demo-mode fixed coordinate: Toronto downtown
 const DEMO_COORDINATE = { lat: 43.6532, lng: -79.3832 };
 
+// Common shorthand callers (or AI agents) might use for the three seeded
+// verticals. Matched case-insensitively. Inputs not in this map fall through
+// unchanged so adding a new Vertical row with a fresh slug just works.
+const VERTICAL_SLUG_ALIASES: Record<string, string> = {
+  // veterinary
+  vet: 'veterinary',
+  vets: 'veterinary',
+  veterinarian: 'veterinary',
+  veterinary: 'veterinary',
+  // dental
+  dental: 'dental',
+  dentist: 'dental',
+  dentistry: 'dental',
+  teeth: 'dental',
+  // automotive
+  auto: 'automotive',
+  automotive: 'automotive',
+  car: 'automotive',
+  garage: 'automotive',
+  mechanic: 'automotive',
+  mechanical: 'automotive',
+};
+
+function normalizeVerticalSlug(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+  const lower = input.trim().toLowerCase();
+  return VERTICAL_SLUG_ALIASES[lower] ?? lower;
+}
+
 export interface ProviderWithSlot {
   provider: Provider;
   slot: Slot;
@@ -87,15 +116,20 @@ export class GeoService {
     dayEnd.setHours(23, 59, 59, 999);
 
     // Resolve vertical slug → id so the SQL filter can use the indexed FK.
-    // If the slug is unknown, no providers match (safer than ignoring it).
+    // Normalize shorthand first (vet → veterinary, dentist → dental, …) so an
+    // AI agent saying "vet" still matches. Unknown slugs return no providers
+    // (safer than silently ignoring the filter).
     let verticalId: string | null = null;
     if (verticalSlug) {
+      const canonical = normalizeVerticalSlug(verticalSlug)!;
       const vertical = await this.prisma.vertical.findUnique({
-        where: { slug: verticalSlug },
+        where: { slug: canonical },
         select: { id: true },
       });
       if (!vertical) {
-        this.logger.warn(`Unknown vertical slug "${verticalSlug}" — returning no providers`);
+        this.logger.warn(
+          `Unknown vertical slug "${verticalSlug}" (normalized to "${canonical}") — returning no providers`,
+        );
         return [];
       }
       verticalId = vertical.id;

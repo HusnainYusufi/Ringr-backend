@@ -60,6 +60,10 @@ Add six custom tools to the agent. All use the same auth (HMAC via webhook
 secret); Retell sends `agent_id` in the body so the backend resolves the
 tenant automatically.
 
+> **All tool responses are returned RAW** — they bypass the global API
+> envelope. Retell tools can read top-level fields directly (e.g. `customer_id`,
+> `options[0].slot_id`) without unwrapping a `data:` object.
+
 ### Tool 1: `send_otp`
 
 ```
@@ -74,7 +78,10 @@ POST https://api.ringr.ca/api/v1/voice/tools/send-otp
 }
 ```
 
-**Response**: `{ "result": "A verification code has been sent to ..." }`
+**Response**:
+```json
+{ "result": "A verification code has been sent to ..." }
+```
 
 **Description for the AI**: "Send a 6-digit verification code by SMS to the
 caller's phone number. Always use this before booking — we need to verify
@@ -97,18 +104,23 @@ POST https://api.ringr.ca/api/v1/voice/tools/verify-otp
 }
 ```
 
-**Response**: `{ "result": "Verified. Welcome back, ..." }` or `{ "result": "The code didn't match..." }`
+**Response (success)**:
+```json
+{
+  "result": "Verified. Welcome back, Alex!",
+  "customer_id": "cust-abc123",
+  "is_new_customer": false
+}
+```
+
+**Response (bad code)**:
+```json
+{ "result": "The code didn't match. Please ask the caller to double-check the SMS and try again." }
+```
 
 **Description**: "Validate the code the caller reads back. On success the
 caller is identified (existing customer) or auto-registered (new customer).
-The response includes the customer's id implicitly — you don't need to pass
-it around; subsequent tools resolve it from the active call."
-
-> **Note**: today's response is a conversational string; the customer_id is
-> not returned explicitly. To pass it to later tools, instruct the agent to
-> ask "Could you confirm your phone number once more?" or store the value
-> via Retell's conversation context. *Recommended improvement in a follow-up:
-> return the customer_id in a structured field.*
+**Save `customer_id` from the response — every subsequent tool needs it.**"
 
 ---
 
@@ -122,14 +134,24 @@ POST https://api.ringr.ca/api/v1/voice/tools/get-subjects
 ```json
 {
   "call": { ... },
-  "customer_id": "cust-..."
+  "customer_id": "cust-abc123"
 }
 ```
 
-**Response**: `{ "result": "Found 2 record(s): Buddy (dog), Luna (cat)..." }`
+**Response**:
+```json
+{
+  "result": "Found 2 record(s): Buddy (dog), Luna (cat). Please ask which one this visit is for, or if it's for a new one.",
+  "subjects": [
+    { "subject_id": "subj-aaa", "name": "Buddy", "type": "dog" },
+    { "subject_id": "subj-bbb", "name": "Luna",  "type": "cat" }
+  ]
+}
+```
 
 **Description**: "After OTP verification, check what records the caller has
-on file (pets, vehicles, etc.) so we can ask which one this visit is for."
+on file (pets, vehicles, etc.) so we can ask which one this visit is for.
+**Save the chosen `subject_id` to pass into `confirm_booking`.**"
 
 ---
 
@@ -149,13 +171,34 @@ POST https://api.ringr.ca/api/v1/voice/tools/find-providers
 }
 ```
 
-**Description**: "Find the closest available providers within 25km of the
-caller's postal code. `vertical_slug` is REQUIRED — pass `veterinary`,
-`dental`, or `automotive` based on what the caller is looking for. Without
-it you might book a pet at a dentist."
+**Response**:
+```json
+{
+  "result": "I found 3 provider(s) near M5H 1J9. Option 1: Downtown Animal Hospital at 123 King St W, Toronto — 0.4 km away. Next slot: Monday, June 15, 9:00 AM. ...",
+  "options": [
+    {
+      "slot_id": "slot-xyz1",
+      "provider_id": "prov-vet-1",
+      "provider_name": "Downtown Animal Hospital",
+      "address": "123 King St W",
+      "city": "Toronto",
+      "distance_km": 0.42,
+      "starts_at": "2026-06-15T13:00:00.000Z"
+    }
+  ]
+}
+```
 
-**Vertical slugs**: as seeded — `veterinary`, `dental`, `automotive`. SUPER_ADMIN
-can create more via the admin verticals endpoint.
+**Description**: "Find the closest available providers within 25 km of the
+caller's postal code. `vertical_slug` is REQUIRED — pass `veterinary`,
+`dental`, or `automotive` (shorthand like `vet`/`dentist`/`auto` is also
+accepted). Without it you might book a pet at a dentist. **Save the chosen
+option's `slot_id` to pass into `hold_slot`.**"
+
+**Vertical slug aliases** (case-insensitive):
+- `veterinary` ← vet, vets, veterinarian
+- `dental` ← dentist, dentistry, teeth
+- `automotive` ← auto, car, garage, mechanic, mechanical
 
 ---
 
@@ -169,8 +212,17 @@ POST https://api.ringr.ca/api/v1/voice/tools/hold-slot
 ```json
 {
   "call": { ... },
-  "slot_id": "slot-...",
-  "customer_id": "cust-..."
+  "slot_id": "slot-xyz1",
+  "customer_id": "cust-abc123"
+}
+```
+
+**Response**:
+```json
+{
+  "result": "I've held that slot for you at Downtown Animal Hospital on Monday, June 15, 9:00 AM. You have 10 minutes to confirm. Shall I go ahead and confirm the booking?",
+  "slot_id": "slot-xyz1",
+  "expires_at": "2026-06-15T13:10:00.000Z"
 }
 ```
 
@@ -190,11 +242,20 @@ POST https://api.ringr.ca/api/v1/voice/tools/confirm-booking
 ```json
 {
   "call": { ... },
-  "slot_id": "slot-...",
-  "customer_id": "cust-...",
-  "subject_id": "subj-...",
+  "slot_id": "slot-xyz1",
+  "customer_id": "cust-abc123",
+  "subject_id": "subj-aaa",
   "notes": "annual checkup",
   "extra_fields": { "petSpecies": "dog" }
+}
+```
+
+**Response**:
+```json
+{
+  "result": "Your appointment at Downtown Animal Hospital is confirmed for Monday, June 15, 9:00 AM. You'll receive a confirmation SMS shortly.",
+  "booking_id": "book-zzz999",
+  "slot_id": "slot-xyz1"
 }
 ```
 
@@ -286,13 +347,13 @@ Before pointing real customer traffic at this:
 
 ## Known sharp edges
 
-- **customer_id isn't returned from verify_otp** as a structured field. The
-  AI has to infer it from the response string or, more reliably, re-pass the
-  phone number on subsequent tools — but the current tool DTOs don't accept
-  phone-based lookups. **Recommended fix**: add a `customer_id` field to the
-  verify_otp response so the agent can pass it explicitly. ~30 minutes.
 - **No idempotency on `call_started`** beyond the unique `callId` constraint
   — a retried webhook will surface a 409 in logs rather than a 200. Cosmetic.
-- **No vertical autocomplete in find_providers** — if Retell sends a typo
-  like `vet` instead of `veterinary`, the search returns zero results. Fix:
-  add an alias map in `geo.service.ts`.
+- **No retry on outbound SMS**. The booking-confirmation SMS goes via Twilio
+  inside a Bull queue; if Twilio is down, the job retries 3× with backoff
+  but after that, the customer just doesn't get the SMS. Customer-facing
+  failure is silent today. Phase 6b adds a delivery log + redeliver button.
+- **call_started can race confirm_booking** in pathological cases — Retell
+  may send confirm_booking from a tool call before call_started lands in the
+  webhook, leaving a Booking with no associated CallSession. The schema
+  allows it (callSession is optional on Booking) but it's worth tracking.
