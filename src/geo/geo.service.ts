@@ -13,6 +13,35 @@ const GEOCODE_TIMEOUT_MS = 3_000;
 // Demo-mode fixed coordinate: Toronto downtown
 const DEMO_COORDINATE = { lat: 43.6532, lng: -79.3832 };
 
+// Common shorthand callers (or AI agents) might use for the three seeded
+// verticals. Matched case-insensitively. Inputs not in this map fall through
+// unchanged so adding a new Vertical row with a fresh slug just works.
+const VERTICAL_SLUG_ALIASES: Record<string, string> = {
+  // veterinary
+  vet: 'veterinary',
+  vets: 'veterinary',
+  veterinarian: 'veterinary',
+  veterinary: 'veterinary',
+  // dental
+  dental: 'dental',
+  dentist: 'dental',
+  dentistry: 'dental',
+  teeth: 'dental',
+  // automotive
+  auto: 'automotive',
+  automotive: 'automotive',
+  car: 'automotive',
+  garage: 'automotive',
+  mechanic: 'automotive',
+  mechanical: 'automotive',
+};
+
+function normalizeVerticalSlug(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+  const lower = input.trim().toLowerCase();
+  return VERTICAL_SLUG_ALIASES[lower] ?? lower;
+}
+
 export interface ProviderWithSlot {
   provider: Provider;
   slot: Slot;
@@ -76,6 +105,7 @@ export class GeoService {
     tenantId: string,
     date: Date,
     radiusKm = SEARCH_RADIUS_KM,
+    verticalSlug?: string,
   ): Promise<ProviderWithSlot[]> {
     const { lat, lng } = await this.geocodePostalCode(postalCode);
 
@@ -85,31 +115,74 @@ export class GeoService {
     const dayEnd = new Date(date);
     dayEnd.setHours(23, 59, 59, 999);
 
-    // Haversine distance formula in raw SQL — must run inside the DB for performance
-    const providers = await this.prisma.$queryRaw<
-      Array<{ id: string; distance_km: number }>
-    >`
-      SELECT
-        id,
-        (6371 * acos(
-          cos(radians(${lat})) * cos(radians(lat)) *
-          cos(radians(lng) - radians(${lng})) +
-          sin(radians(${lat})) * sin(radians(lat))
-        )) AS distance_km
-      FROM "Provider"
-      WHERE
-        "tenantId" = ${tenantId}
-        AND "isDeleted" = false
-        AND "isActive" = true
-      HAVING
-        (6371 * acos(
-          cos(radians(${lat})) * cos(radians(lat)) *
-          cos(radians(lng) - radians(${lng})) +
-          sin(radians(${lat})) * sin(radians(lat))
-        )) <= ${radiusKm}
-      ORDER BY distance_km ASC
-      LIMIT 10
-    `;
+    // Resolve vertical slug → id so the SQL filter can use the indexed FK.
+    // Normalize shorthand first (vet → veterinary, dentist → dental, …) so an
+    // AI agent saying "vet" still matches. Unknown slugs return no providers
+    // (safer than silently ignoring the filter).
+    let verticalId: string | null = null;
+    if (verticalSlug) {
+      const canonical = normalizeVerticalSlug(verticalSlug)!;
+      const vertical = await this.prisma.vertical.findUnique({
+        where: { slug: canonical },
+        select: { id: true },
+      });
+      if (!vertical) {
+        this.logger.warn(
+          `Unknown vertical slug "${verticalSlug}" (normalized to "${canonical}") — returning no providers`,
+        );
+        return [];
+      }
+      verticalId = vertical.id;
+    }
+
+    // Haversine distance formula in raw SQL — must run inside the DB for performance.
+    // Tagged-template params are parameterized by Prisma; safe against SQL injection.
+    const providers = verticalId
+      ? await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
+          SELECT
+            id,
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) AS distance_km
+          FROM "Provider"
+          WHERE
+            "tenantId" = ${tenantId}
+            AND "isDeleted" = false
+            AND "isActive" = true
+            AND "verticalId" = ${verticalId}
+          HAVING
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) <= ${radiusKm}
+          ORDER BY distance_km ASC
+          LIMIT 10
+        `
+      : await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
+          SELECT
+            id,
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) AS distance_km
+          FROM "Provider"
+          WHERE
+            "tenantId" = ${tenantId}
+            AND "isDeleted" = false
+            AND "isActive" = true
+          HAVING
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) <= ${radiusKm}
+          ORDER BY distance_km ASC
+          LIMIT 10
+        `;
 
     const results: ProviderWithSlot[] = [];
 
