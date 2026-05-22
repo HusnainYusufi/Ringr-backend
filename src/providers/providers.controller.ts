@@ -54,6 +54,16 @@ export class ProvidersController {
     return this.providersService.myDashboard(user, tenant.id);
   }
 
+  @Patch('me')
+  @Roles(Role.PROVIDER_OWNER)
+  updateMyProvider(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: Partial<CreateProviderDto>,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.updateMyProvider(user, dto, tenant.id);
+  }
+
   @Post()
   @Roles(Role.TENANT_ADMIN, Role.SUPER_ADMIN)
   create(@Body() dto: CreateProviderDto, @CurrentTenant() tenant: Tenant) {

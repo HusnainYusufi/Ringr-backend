@@ -62,6 +62,18 @@ export class ProvidersService {
     return this.prisma.provider.update({ where: { id }, data: dto });
   }
 
+  /** PROVIDER_OWNER convenience — patches the caller's own provider profile. */
+  async updateMyProvider(
+    user: JwtPayload,
+    dto: Partial<CreateProviderDto>,
+    tenantId: string,
+  ) {
+    if (!user.providerId) {
+      throw new NotFoundException('No provider attached to this account');
+    }
+    return this.update(user.providerId, dto, tenantId);
+  }
+
   // ─── Schedule CRUD ─────────────────────────────────────────────────────────
 
   async listSchedules(providerId: string, tenantId: string) {
