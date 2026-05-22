@@ -1,12 +1,14 @@
 import {
   IsString,
   IsEmail,
+  IsEnum,
   IsPhoneNumber,
   IsOptional,
   IsNumber,
   Min,
   Max,
 } from 'class-validator';
+import { SubscriptionTier } from '@prisma/client';
 
 /**
  * SUPER_ADMIN single-shot onboarding payload.
@@ -65,4 +67,10 @@ export class OnboardProviderDto {
 
   @IsString()
   ownerLastName: string;
+
+  // Defaults to STARTER (API + webhooks only) — vendors who want the portal
+  // need PRO. SUPER_ADMIN can flip this later via /admin/subscriptions.
+  @IsOptional()
+  @IsEnum(SubscriptionTier)
+  tier?: SubscriptionTier;
 }

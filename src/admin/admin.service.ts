@@ -12,6 +12,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BillingService } from '../billing/billing.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { ApiKeysService } from '../api-keys/api-keys.service';
 import {
   CreateTenantDto,
   UpdateTenantDto,
@@ -31,6 +33,8 @@ export class AdminService {
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService,
     private readonly billing: BillingService,
+    private readonly subscriptions: SubscriptionsService,
+    private readonly apiKeys: ApiKeysService,
   ) {}
 
   // ─── Verticals ────────────────────────────────────────────────────────────
@@ -239,6 +243,21 @@ export class AdminService {
     // booking can find it.
     await this.billing.ensureBilling(result.provider.id, dto.tenantId);
 
+    // Provision the subscription at the requested tier (defaults to STARTER).
+    const subscription = await this.subscriptions.ensureSubscription(
+      result.provider.id,
+      dto.tenantId,
+      dto.tier,
+    );
+
+    // Issue the provider's first API key. Plaintext is returned ONCE — surface
+    // it to the SUPER_ADMIN so they can pass it to the vendor securely.
+    const apiKey = await this.apiKeys.issueKey(
+      result.provider.id,
+      dto.tenantId,
+      'Initial onboarding key',
+    );
+
     // Email outside the transaction — never let a flaky email API roll back the DB.
     await this.sendInviteEmail(result.owner, result.provider.name, token, expiresAt);
 
@@ -249,6 +268,16 @@ export class AdminService {
       invite: {
         token, // exposed once so portal can copy a fallback link; never returned again
         expiresAt,
+      },
+      subscription: {
+        tier: subscription.tier,
+        status: subscription.status,
+      },
+      apiKey: {
+        // Full plaintext returned exactly once — SUPER_ADMIN copies and shares with the vendor.
+        plaintext: apiKey.plaintext,
+        keyPrefix: apiKey.keyPrefix,
+        lastFour: apiKey.lastFour,
       },
     };
   }

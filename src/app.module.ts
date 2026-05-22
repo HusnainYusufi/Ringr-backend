@@ -18,6 +18,9 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { AdminModule } from './admin/admin.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { BillingModule } from './billing/billing.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { ApiKeysModule } from './api-keys/api-keys.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 
 @Module({
   imports: [
@@ -66,6 +69,9 @@ import { BillingModule } from './billing/billing.module';
     AdminModule,
     AnalyticsModule,
     BillingModule,
+    SubscriptionsModule,
+    ApiKeysModule,
+    IntegrationsModule,
   ],
   providers: [
     // Apply rate limiting to every route by default. Sensitive endpoints
