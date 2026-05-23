@@ -3,6 +3,11 @@
 End-to-end checklist for wiring a Retell agent into the Ringr backend. Assumes
 the backend is deployed at `https://api.ringr.ca` (replace with your real URL).
 
+**Identity model: no OTP.** The caller is identified by `call.from_number`,
+which Retell sends automatically. The backend upserts a Customer on the first
+tool call. There are no `send_otp` or `verify_otp` tools — drop them from
+your Retell agent if you had them.
+
 ## 1. Register your agent in the database
 
 Every Retell agent must be mapped to a tenant by its `agent_id`. Pick one
@@ -39,109 +44,54 @@ RETELL_WEBHOOK_SECRET=<random_64_char_hex_string>
 ```
 
 Put the same value in Retell's dashboard as the webhook signing secret. In
-production the backend will reject any unsigned/wrongly-signed webhook (we
-made it fail-closed in Phase 0).
+production the backend rejects any unsigned/wrongly-signed webhook. In demo
+mode (`DEMO_MODE=true`) HMAC is skipped — never enable demo mode in prod.
 
 ## 3. Configure Retell — webhook URL
-
-In your Retell agent settings, set the call-lifecycle webhook URL to:
 
 ```
 POST https://api.ringr.ca/api/v1/voice/webhook
 ```
 
-This endpoint receives `call_started`, `call_ended`, and `call_analyzed`
-events. The backend stores the call as a `CallSession`, then on `call_ended`
-attaches the transcript and duration.
+Handles three lifecycle events:
 
-## 4. Configure Retell — tools
+- `call_started` — eagerly upserts the customer + creates a `CallSession`
+- `call_ended` — attaches transcript + duration to the `CallSession`
+- `call_analyzed` — attaches the AI's call summary
 
-Add six custom tools to the agent. All use the same auth (HMAC via webhook
-secret); Retell sends `agent_id` in the body so the backend resolves the
-tenant automatically.
+The backend never throws from the webhook handler — even on internal error
+it logs and returns `{ received: true }`. Retell never sees retries.
+
+## 4. Configure Retell — tools (four of them)
+
+All tools use the same auth (HMAC via webhook secret). Retell sends
+`agent_id` in the body so the backend resolves the tenant automatically.
 
 > **All tool responses are returned RAW** — they bypass the global API
-> envelope. Retell tools can read top-level fields directly (e.g. `customer_id`,
-> `options[0].slot_id`) without unwrapping a `data:` object.
+> envelope. Retell tools can read top-level fields directly (e.g.
+> `options[0].slot_id`, `subjects[0].subject_id`) without unwrapping
+> a `data:` object.
 
-### Tool 1: `send_otp`
-
-```
-POST https://api.ringr.ca/api/v1/voice/tools/send-otp
-```
-
-**Request body** (Retell sends `call` automatically):
-```json
-{
-  "call": { "call_id": "...", "agent_id": "...", "from_number": "+1416..." },
-  "phone": "+14165551234"
-}
-```
-
-**Response**:
-```json
-{ "result": "A verification code has been sent to ..." }
-```
-
-**Description for the AI**: "Send a 6-digit verification code by SMS to the
-caller's phone number. Always use this before booking — we need to verify
-they have access to the number."
-
----
-
-### Tool 2: `verify_otp`
-
-```
-POST https://api.ringr.ca/api/v1/voice/tools/verify-otp
-```
-
-**Request body**:
-```json
-{
-  "call": { ... },
-  "phone": "+14165551234",
-  "code": "123456"
-}
-```
-
-**Response (success)**:
-```json
-{
-  "result": "Verified. Welcome back, Alex!",
-  "customer_id": "cust-abc123",
-  "is_new_customer": false
-}
-```
-
-**Response (bad code)**:
-```json
-{ "result": "The code didn't match. Please ask the caller to double-check the SMS and try again." }
-```
-
-**Description**: "Validate the code the caller reads back. On success the
-caller is identified (existing customer) or auto-registered (new customer).
-**Save `customer_id` from the response — every subsequent tool needs it.**"
-
----
-
-### Tool 3: `get_subjects`
+### Tool 1: `get_subjects`
 
 ```
 POST https://api.ringr.ca/api/v1/voice/tools/get-subjects
 ```
 
-**Request body**:
+**Request body** (Retell sends `call` automatically):
 ```json
 {
-  "call": { ... },
-  "customer_id": "cust-abc123"
+  "call": { "call_id": "...", "agent_id": "...", "from_number": "+14165551234" },
+  "phone": "+14165551234"
 }
 ```
 
-**Response**:
+`phone` is optional — backend falls back to `call.from_number` if absent.
+
+**Response (subjects exist)**:
 ```json
 {
-  "result": "Found 2 record(s): Buddy (dog), Luna (cat). Please ask which one this visit is for, or if it's for a new one.",
+  "result": "Found 2 record(s): Buddy (dog), Luna (cat). Which one is this visit for?",
   "subjects": [
     { "subject_id": "subj-aaa", "name": "Buddy", "type": "dog" },
     { "subject_id": "subj-bbb", "name": "Luna",  "type": "cat" }
@@ -149,13 +99,22 @@ POST https://api.ringr.ca/api/v1/voice/tools/get-subjects
 }
 ```
 
-**Description**: "After OTP verification, check what records the caller has
-on file (pets, vehicles, etc.) so we can ask which one this visit is for.
-**Save the chosen `subject_id` to pass into `confirm_booking`.**"
+**Response (no records on file)**:
+```json
+{
+  "result": "I don't have any records on file for you yet. Could you tell me your pet's name and what kind of animal they are?",
+  "subjects": []
+}
+```
+
+**Description for the AI**: "Check what records the caller has on file
+(pets, vehicles). If results exist, ask which one this visit is for and
+**save the chosen `subject_id` for `confirm_booking`**. If empty, ask
+the caller for the details so we can create one."
 
 ---
 
-### Tool 4: `find_providers`
+### Tool 2: `find_providers`
 
 ```
 POST https://api.ringr.ca/api/v1/voice/tools/find-providers
@@ -171,10 +130,10 @@ POST https://api.ringr.ca/api/v1/voice/tools/find-providers
 }
 ```
 
-**Response**:
+**Response (found)**:
 ```json
 {
-  "result": "I found 3 provider(s) near M5H 1J9. Option 1: Downtown Animal Hospital at 123 King St W, Toronto — 0.4 km away. Next slot: Monday, June 15, 9:00 AM. ...",
+  "result": "I found 3 provider(s) near M5H 1J9. Option 1: Downtown Animal Hospital at 123 King St W, Toronto — 0.4 km away. Available Monday, June 15, 9:00 AM. ... Which would you prefer?",
   "options": [
     {
       "slot_id": "slot-xyz1",
@@ -186,6 +145,14 @@ POST https://api.ringr.ca/api/v1/voice/tools/find-providers
       "starts_at": "2026-06-15T13:00:00.000Z"
     }
   ]
+}
+```
+
+**Response (none)**:
+```json
+{
+  "result": "I couldn't find any available providers near that postal code for that date. Could you try a nearby postal code or a different date?",
+  "options": []
 }
 ```
 
@@ -202,7 +169,7 @@ option's `slot_id` to pass into `hold_slot`.**"
 
 ---
 
-### Tool 5: `hold_slot`
+### Tool 3: `hold_slot`
 
 ```
 POST https://api.ringr.ca/api/v1/voice/tools/hold-slot
@@ -212,27 +179,37 @@ POST https://api.ringr.ca/api/v1/voice/tools/hold-slot
 ```json
 {
   "call": { ... },
-  "slot_id": "slot-xyz1",
-  "customer_id": "cust-abc123"
+  "slot_id": "slot-xyz1"
 }
 ```
 
-**Response**:
+The backend identifies the caller from `call.from_number`. A `customer_id`
+field is accepted for back-compat but ignored.
+
+**Response (held)**:
 ```json
 {
-  "result": "I've held that slot for you at Downtown Animal Hospital on Monday, June 15, 9:00 AM. You have 10 minutes to confirm. Shall I go ahead and confirm the booking?",
+  "result": "I have held that slot at Downtown Animal Hospital for Monday, June 15, 9:00 AM. You have 10 minutes to confirm. Shall I go ahead and book it?",
   "slot_id": "slot-xyz1",
   "expires_at": "2026-06-15T13:10:00.000Z"
 }
 ```
 
-**Description**: "Reserve the slot the caller picked for 10 minutes. If we
-don't confirm in that window the slot auto-releases. Always hold before
-confirming."
+**Response (slot taken)**:
+```json
+{
+  "result": "Sorry, that slot was just taken by someone else. Let me find you another option.",
+  "slot_id": null
+}
+```
+
+**Description**: "Reserve the chosen slot for 10 minutes. If we don't
+confirm in that window the slot auto-releases. **Always hold before
+`confirm_booking`.**"
 
 ---
 
-### Tool 6: `confirm_booking`
+### Tool 4: `confirm_booking`
 
 ```
 POST https://api.ringr.ca/api/v1/voice/tools/confirm-booking
@@ -243,29 +220,41 @@ POST https://api.ringr.ca/api/v1/voice/tools/confirm-booking
 {
   "call": { ... },
   "slot_id": "slot-xyz1",
-  "customer_id": "cust-abc123",
   "subject_id": "subj-aaa",
   "notes": "annual checkup",
   "extra_fields": { "petSpecies": "dog" }
 }
 ```
 
-**Response**:
+`subject_id` is optional — new customers with no records on file simply
+omit it. `notes` and `extra_fields` are also optional.
+
+**Response (confirmed)**:
 ```json
 {
-  "result": "Your appointment at Downtown Animal Hospital is confirmed for Monday, June 15, 9:00 AM. You'll receive a confirmation SMS shortly.",
+  "result": "Your appointment at Downtown Animal Hospital is confirmed for Monday, June 15, 9:00 AM. You will receive a confirmation SMS shortly. Is there anything else I can help you with?",
   "booking_id": "book-zzz999",
   "slot_id": "slot-xyz1"
 }
 ```
 
+**Response (hold expired)**:
+```json
+{
+  "result": "It looks like the hold on that slot just expired. Let me find you another available time.",
+  "booking_id": null,
+  "slot_id": "slot-xyz1"
+}
+```
+
 **Description**: "Finalize the booking. After this fires the customer gets
-a confirmation SMS and the provider sees the appointment in their dashboard."
+a confirmation SMS and the provider sees the appointment. The slot must
+have been held by `hold_slot` first — if the hold has expired we'll tell
+you so you can search again."
 
 ## 5. Recommended agent system prompt
 
-Drop this (lightly edited) into your Retell agent's system prompt. It's
-written to use all six tools in order.
+Drop this (lightly edited) into your Retell agent's system prompt:
 
 ```
 You are Ringr's appointment booking assistant. You take inbound calls and
@@ -275,85 +264,84 @@ You serve three service types: veterinary clinics, dental practices, and
 automotive service shops. Your FIRST job on every call is to figure out
 which the caller needs.
 
+You do NOT need to verify the caller — their phone number is automatically
+included in every tool call and identifies them.
+
 CALL FLOW:
 1. Greet warmly. Ask what type of service they need.
    Map their answer to one of: "veterinary", "dental", "automotive".
-2. Confirm or ask for their phone number. Call send_otp.
-3. Ask them to read back the verification code. Call verify_otp.
-4. Note the customer's identity from the verify_otp response.
-5. Call get_subjects to see existing records (pets, vehicles).
-6. Ask if this visit is for an existing record or new. If new, gather the
-   essential details (e.g. "What's your pet's name and species?").
-7. Ask for their postal code or full address — extract the postal code.
-8. Ask for a preferred date if not already mentioned. Default to today.
-9. Call find_providers with postal_code, vertical_slug, and preferred_date.
-10. Read the top 2-3 options conversationally — provider name, distance,
-    earliest available time. Ask which they prefer.
-11. Call hold_slot with the chosen slot's id and the customer's id.
-12. Recap the booking out loud (provider, time, what it's for) and ask for
-    confirmation.
-13. On confirmation, call confirm_booking with slot_id, customer_id,
-    subject_id (if applicable), and any notes.
-14. Confirm the SMS is on its way and wrap up the call politely.
+2. Call get_subjects to see what records they have on file.
+3. If get_subjects returned subjects: ask which one this visit is for and
+   save its subject_id. If empty: ask for the new record's details (e.g.
+   "What's your pet's name and what kind of animal are they?") — you'll
+   pass the details as notes or extra_fields on confirm_booking.
+4. Ask for their postal code or full address — extract the postal code.
+5. Ask for a preferred date if not already mentioned. Default to today.
+6. Call find_providers with postal_code, vertical_slug, preferred_date.
+7. Read the top 2-3 options conversationally — provider name, distance,
+   earliest available time. Ask which they prefer.
+8. Save the chosen option's slot_id.
+9. Call hold_slot with that slot_id.
+10. Recap the booking out loud (provider, time, what it's for) and ask
+    for confirmation.
+11. On confirmation, call confirm_booking with slot_id, subject_id (if
+    they have one on file), and any notes.
+12. Confirm the SMS is on its way and wrap up politely.
 
 RULES:
-- Never read internal IDs aloud (slot_id, customer_id, agent_id).
-- If a tool returns an error string, apologize, explain briefly, and offer
-  to try again or transfer to a human.
+- Never read internal IDs aloud (slot_id, subject_id, call_id).
+- If a tool returns an error string, apologize, explain briefly, and
+  offer to try again.
 - Keep your sentences short — you're on a phone call, not writing prose.
 - Always confirm critical details (date/time, provider name, what the
   visit is for) before calling confirm_booking.
-- If the caller is in a hurry, you can shortcut by asking for postal code
-  and service type up-front.
 ```
 
-## 6. Test the round trip
-
-Before going live:
+## 6. Test the round trip (curl)
 
 ```bash
-# 1. Verify a known agent_id resolves to a tenant
-curl -X POST https://api.ringr.ca/api/v1/voice/webhook \
-  -H 'Content-Type: application/json' \
-  -H 'x-retell-signature: <hmac>' \
-  -d '{
-    "event": "call_started",
-    "call": {
-      "call_id": "test_call_001",
-      "agent_id": "<your_real_agent_id>",
-      "from_number": "+14165551234"
-    }
-  }'
-# Expect 200 with {"received": true}. Check the database for a new CallSession row.
+# 1. Generate an HMAC for a test call_started event
+SECRET='<your_webhook_secret>'
+AGENT='<your_real_agent_id_OR_ringr-agent-demo>'
+BODY="{\"event\":\"call_started\",\"call\":{\"call_id\":\"test_001\",\"agent_id\":\"$AGENT\",\"from_number\":\"+14165551234\"}}"
+SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $2}')
 
-# 2. Make a real test call from your own phone (DEMO_MODE=false).
-#    Watch backend logs for OTP send, tool calls, booking confirmation,
-#    and the booking.confirmed SMS reaching your phone.
+# 2. Fire the webhook
+curl -X POST https://api.ringr.ca/api/v1/voice/webhook \
+  -H "Content-Type: application/json" \
+  -H "x-retell-signature: $SIG" \
+  -d "$BODY"
+# Expect: { "received": true } and a new CallSession + Customer row.
+
+# 3. Make a real test call from your own phone. Watch backend logs for
+#    tool calls in sequence and the booking-confirmation SMS arriving.
 ```
+
+In demo mode (`DEMO_MODE=true`) HMAC verification is skipped, so you can
+skip step 1 and just POST the body.
 
 ## 7. Production env checklist
 
-Before pointing real customer traffic at this:
-
-- [ ] `RETELL_WEBHOOK_SECRET` set (backend rejects unsigned webhooks in production).
-- [ ] `RETELL_API_KEY` set (currently unused by the backend, but reserved for outbound Retell calls in a future pass).
+- [ ] `RETELL_WEBHOOK_SECRET` set on the backend AND matches Retell's dashboard.
+- [ ] Your real agent's `agent_id` registered via `POST /admin/tenants/.../retell-agents`.
+- [ ] `DEMO_MODE=false` (otherwise HMAC is skipped, geo returns Toronto coords, SMS is logged not sent).
 - [ ] `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` set.
-- [ ] **Twilio A2P 10DLC registered** for the from-number — without this, SMS to most US numbers will be filtered as spam. Canadian SMS does not require A2P but check provincial rules.
-- [ ] `SMTP_*` set (nodemailer + Gmail App Password by default).
-- [ ] `GOOGLE_MAPS_API_KEY` set if you want real geocoding (else demo coords).
-- [ ] `DEMO_MODE=false` (otherwise OTP always accepts `123456`).
-- [ ] `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` rotated to long random strings.
-- [ ] DB credentials rotated from the leaked baseline.
+- [ ] Twilio A2P 10DLC registered if sending SMS to US numbers.
+- [ ] `GOOGLE_MAPS_API_KEY` set (or accept that demo coords will be used).
+- [ ] `JWT_ACCESS_SECRET` + `JWT_REFRESH_SECRET` are long random strings.
+- [ ] DB credentials rotated from the seed baseline.
 
-## Known sharp edges
+## 8. Known sharp edges
 
-- **No idempotency on `call_started`** beyond the unique `callId` constraint
-  — a retried webhook will surface a 409 in logs rather than a 200. Cosmetic.
-- **No retry on outbound SMS**. The booking-confirmation SMS goes via Twilio
-  inside a Bull queue; if Twilio is down, the job retries 3× with backoff
-  but after that, the customer just doesn't get the SMS. Customer-facing
-  failure is silent today. Phase 6b adds a delivery log + redeliver button.
-- **call_started can race confirm_booking** in pathological cases — Retell
-  may send confirm_booking from a tool call before call_started lands in the
-  webhook, leaving a Booking with no associated CallSession. The schema
-  allows it (callSession is optional on Booking) but it's worth tracking.
+- **No retry on outbound SMS.** The booking-confirmation SMS goes through a
+  Bull queue; if Twilio is down the job retries 3× with backoff and then
+  silently fails. Customer-facing outage is invisible without alerting.
+- **call_started can race tool calls.** Retell may fire a tool before its
+  own `call_started` webhook lands, in which case the CallSession is created
+  later and any tool-side customer-resolution still works (it doesn't depend
+  on the session). Booking ends up with no CallSession link — schema allows
+  it but worth tracking.
+- **Caller spoofing.** Without OTP, anyone who can spoof Caller-ID can
+  impersonate a customer (list their subjects, book on their behalf). This
+  is a deliberate UX-for-security tradeoff. Carrier spoofing is harder than
+  it sounds but not impossible — keep this in mind for high-risk verticals.

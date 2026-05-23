@@ -16,6 +16,15 @@ export class RetellWebhookGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
+
+    // Demo mode: skip HMAC verification entirely. Used for local dev and
+    // pre-Retell smoke tests where you can't (or don't want to) sign requests.
+    // Never set DEMO_MODE=true in production.
+    if (this.configService.get<boolean>('demoMode')) {
+      this.logger.debug('DEMO_MODE=true — skipping HMAC verification');
+      return true;
+    }
+
     const signature = request.headers['x-retell-signature'] as string;
     const webhookSecret = this.configService.get<string>('retell.webhookSecret');
 
