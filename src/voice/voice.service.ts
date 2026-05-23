@@ -4,21 +4,20 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { PrismaService } from '../prisma/prisma.service';
 import { GeoService } from '../geo/geo.service';
-import { AuthService } from '../auth/auth.service';
-import { Tenant, SlotStatus, BookingStatus } from '@prisma/client';
-import type Redis from 'ioredis';
+import {
+  Tenant,
+  Customer,
+  Prisma,
+  SlotStatus,
+  BookingStatus,
+} from '@prisma/client';
 
 // Response shapes returned to Retell. Each has a conversational `result`
-// string the AI reads aloud, plus structured fields the AI references in
-// subsequent tool calls (customer_id, slot_id, subject_id, …). Without these
-// structured fields the AI cannot reliably extract IDs from the response
-// string and the call flow breaks.
+// string the AI reads aloud, plus structured sibling fields the AI extracts
+// for use in subsequent tool calls. Without these structured fields the AI
+// would have to parse IDs out of natural-language strings — fragile.
 export interface ToolResult {
   result: string;
-}
-export interface VerifyOtpResult extends ToolResult {
-  customer_id?: string;
-  is_new_customer?: boolean;
 }
 export interface GetSubjectsResult extends ToolResult {
   subjects: Array<{ subject_id: string; name: string; type: string }>;
@@ -35,11 +34,11 @@ export interface FindProvidersResult extends ToolResult {
   }>;
 }
 export interface HoldSlotResult extends ToolResult {
-  slot_id: string;
-  expires_at: string; // ISO 8601 — 10 min from hold
+  slot_id: string | null;
+  expires_at?: string; // ISO 8601 — 10 min from hold; absent on failure
 }
 export interface ConfirmBookingResult extends ToolResult {
-  booking_id: string;
+  booking_id: string | null;
   slot_id: string;
 }
 
@@ -50,68 +49,67 @@ export class VoiceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly geo: GeoService,
-    private readonly authService: AuthService,
     private readonly eventEmitter: EventEmitter2,
     @InjectQueue('slot-management') private readonly slotQueue: Queue,
-    @InjectQueue('notifications') private readonly notifQueue: Queue,
   ) {}
 
-  // ─── Tool: send_otp ───────────────────────────────────────────────────────
+  // ─── Customer resolution (no OTP) ─────────────────────────────────────────
 
-  async sendOtp(phone: string, tenant: Tenant, redis: Redis): Promise<ToolResult> {
-    await this.authService.sendOtp(phone, tenant, redis);
-    return {
-      result: `A verification code has been sent to ${phone}. Please ask the caller to read it back to you.`,
-    };
-  }
+  /**
+   * Identify (or create) the customer behind a phone number. Called at the
+   * start of every tool that needs a customer context. Idempotent — second
+   * call with the same phone returns the existing row.
+   *
+   * The Prisma tenant middleware auto-injects tenantId into both the findFirst
+   * filter and the create data, so passing tenantId here is belt-and-braces
+   * (and survives any future change to the middleware).
+   */
+  async resolveCustomer(phone: string, tenantId: string): Promise<Customer> {
+    const existing = await this.prisma.customer.findFirst({
+      where: { phone, isDeleted: false },
+    });
+    if (existing) return existing;
 
-  // ─── Tool: verify_otp ─────────────────────────────────────────────────────
-
-  async verifyOtp(
-    phone: string,
-    code: string,
-    tenant: Tenant,
-    redis: Redis,
-  ): Promise<VerifyOtpResult> {
     try {
-      const result = await this.authService.verifyOtp(phone, code, tenant, redis);
-      const customer = await this.prisma.customer.findFirst({ where: { phone } });
-      const name = customer?.name;
-
-      const message = result.isNewCustomer
-        ? `Verified. I couldn't find an existing account for this number, so I've created one. How can I help you today?`
-        : `Verified. Welcome back${name ? `, ${name}` : ''}! I can see your account. How can I help you today?`;
-
-      return {
-        result: message,
-        customer_id: customer?.id,
-        is_new_customer: result.isNewCustomer,
-      };
-    } catch {
-      return {
-        result: `The code didn't match. Please ask the caller to double-check the SMS and try again.`,
-      };
+      return await this.prisma.customer.create({
+        data: { phone, tenantId },
+      });
+    } catch (err) {
+      // Race: another concurrent tool call created the customer between our
+      // findFirst and create. The unique (tenantId, phone) constraint catches
+      // it — refetch and return the winner.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const customer = await this.prisma.customer.findFirst({
+          where: { phone, isDeleted: false },
+        });
+        if (customer) return customer;
+      }
+      throw err;
     }
   }
 
   // ─── Tool: get_subjects ───────────────────────────────────────────────────
 
-  async getSubjects(customerId: string, tenant: Tenant): Promise<GetSubjectsResult> {
+  async getSubjects(phone: string, tenant: Tenant): Promise<GetSubjectsResult> {
+    const customer = await this.resolveCustomer(phone, tenant.id);
+
     const subjects = await this.prisma.subject.findMany({
-      where: { customerId, isDeleted: false },
+      where: { customerId: customer.id, isDeleted: false },
     });
 
     if (subjects.length === 0) {
       return {
-        result: `No existing records found for this customer. You'll need to collect the details now.`,
+        result: `I don't have any records on file for you yet. Could you tell me your pet's name and what kind of animal they are?`,
         subjects: [],
       };
     }
 
     const list = subjects.map((s) => `${s.name} (${s.type})`).join(', ');
-
     return {
-      result: `Found ${subjects.length} record(s): ${list}. Please ask which one this visit is for, or if it's for a new one.`,
+      result: `Found ${subjects.length} record(s): ${list}. Which one is this visit for?`,
       subjects: subjects.map((s) => ({
         subject_id: s.id,
         name: s.name,
@@ -126,8 +124,8 @@ export class VoiceService {
     postalCode: string,
     tenant: Tenant,
     verticalSlug?: string,
-    subjectType?: string,
-    visitReason?: string,
+    _subjectType?: string,
+    _visitReason?: string,
     preferredDate?: string,
   ): Promise<FindProvidersResult> {
     const searchDate = preferredDate ? new Date(preferredDate) : new Date();
@@ -143,7 +141,7 @@ export class VoiceService {
     if (results.length === 0) {
       const verticalNote = verticalSlug ? ` ${verticalSlug}` : '';
       return {
-        result: `I couldn't find any available${verticalNote} providers near ${postalCode} for that date. Would you like to try a different date or expand the search area?`,
+        result: `I couldn't find any available${verticalNote} providers near ${postalCode} for that date. Could you try a nearby postal code or a different date?`,
         options: [],
       };
     }
@@ -152,7 +150,7 @@ export class VoiceService {
     const formatted = top
       .map(
         (r, i) =>
-          `Option ${i + 1}: ${r.provider.name} at ${r.provider.address}, ${r.provider.city} — ${r.distanceKm.toFixed(1)} km away. Next slot: ${this.formatSlotTime(r.slot.startsAt)}.`,
+          `Option ${i + 1}: ${r.provider.name} at ${r.provider.address}, ${r.provider.city} — ${r.distanceKm.toFixed(1)} km away. Available ${this.formatSlotTime(r.slot.startsAt)}.`,
       )
       .join(' ');
 
@@ -174,9 +172,11 @@ export class VoiceService {
 
   async holdSlot(
     slotId: string,
-    customerId: string,
+    fromPhone: string,
     tenant: Tenant,
   ): Promise<HoldSlotResult> {
+    const customer = await this.resolveCustomer(fromPhone, tenant.id);
+
     const slot = await this.prisma.slot.findFirst({
       where: { id: slotId, status: SlotStatus.AVAILABLE },
       include: { provider: true },
@@ -184,9 +184,8 @@ export class VoiceService {
 
     if (!slot) {
       return {
-        result: `Sorry, that slot is no longer available. Let me search for another option.`,
-        slot_id: slotId,
-        expires_at: new Date().toISOString(),
+        result: `Sorry, that slot was just taken by someone else. Let me find you another option.`,
+        slot_id: null,
       };
     }
 
@@ -195,10 +194,11 @@ export class VoiceService {
 
     await this.prisma.slot.update({
       where: { id: slotId },
-      data: { status: SlotStatus.HELD, heldBy: customerId, heldAt },
+      data: { status: SlotStatus.HELD, heldBy: customer.id, heldAt },
     });
 
-    // Auto-release after 10 minutes if booking isn't confirmed
+    // Auto-release after 10 minutes if booking isn't confirmed. Job ID is
+    // deterministic so confirm_booking can cancel it cleanly.
     await this.slotQueue.add(
       'release-held-slot',
       { slotId, tenantId: tenant.id },
@@ -206,7 +206,7 @@ export class VoiceService {
     );
 
     return {
-      result: `I've held that slot for you at ${slot.provider.name} on ${this.formatSlotTime(slot.startsAt)}. You have 10 minutes to confirm. Shall I go ahead and confirm the booking?`,
+      result: `I have held that slot at ${slot.provider.name} for ${this.formatSlotTime(slot.startsAt)}. You have 10 minutes to confirm. Shall I go ahead and book it?`,
       slot_id: slot.id,
       expires_at: expiresAt.toISOString(),
     };
@@ -216,26 +216,31 @@ export class VoiceService {
 
   async confirmBooking(
     slotId: string,
-    customerId: string,
+    fromPhone: string,
     tenant: Tenant,
     subjectId?: string,
     extraFields?: Record<string, any>,
     notes?: string,
   ): Promise<ConfirmBookingResult> {
+    const customer = await this.resolveCustomer(fromPhone, tenant.id);
+
     const slot = await this.prisma.slot.findFirst({
       where: { id: slotId },
       include: { provider: true },
     });
 
-    if (!slot || (slot.status !== SlotStatus.HELD && slot.status !== SlotStatus.AVAILABLE)) {
+    // Strict: we only confirm slots that were properly held. A still-AVAILABLE
+    // slot means hold_slot wasn't called — race condition or buggy agent.
+    if (!slot || slot.status !== SlotStatus.HELD) {
       return {
-        result: `I wasn't able to confirm the booking — the slot is no longer available. Let me find another option.`,
-        booking_id: '',
+        result: `It looks like the hold on that slot just expired. Let me find you another available time.`,
+        booking_id: null,
         slot_id: slotId,
       };
     }
 
-    // Atomic: mark slot as BOOKED and create booking record
+    // Atomic: HELD → BOOKED + create Booking. If anything inside throws,
+    // the slot stays HELD and the Bull auto-release job will clean up.
     const booking = await this.prisma.$transaction(async (tx) => {
       await tx.slot.update({
         where: { id: slotId },
@@ -246,7 +251,7 @@ export class VoiceService {
         data: {
           tenantId: tenant.id,
           slotId,
-          customerId,
+          customerId: customer.id,
           providerId: slot.providerId,
           subjectId: subjectId ?? null,
           status: BookingStatus.CONFIRMED,
@@ -257,46 +262,81 @@ export class VoiceService {
       });
     });
 
-    // Cancel the auto-release job since we've confirmed
+    // Cancel the auto-release job — fire-and-forget. If the job already fired
+    // (unlikely given the 10-min window vs sub-second confirm), the slot is
+    // already BOOKED so the release no-ops.
     const releaseJob = await this.slotQueue.getJob(`release:${slotId}`);
     if (releaseJob) await releaseJob.remove();
 
-    // Trigger async notifications via event
+    // Triggers SMS via the NotificationModule's @OnEvent('booking.confirmed').
     this.eventEmitter.emit('booking.confirmed', { booking, tenantId: tenant.id });
 
     const dateStr = this.formatSlotTime(slot.startsAt);
     return {
-      result: `Your appointment at ${slot.provider.name} is confirmed for ${dateStr}. You'll receive a confirmation SMS shortly. Is there anything else I can help you with?`,
+      result: `Your appointment at ${slot.provider.name} is confirmed for ${dateStr}. You will receive a confirmation SMS shortly. Is there anything else I can help you with?`,
       booking_id: booking.id,
       slot_id: slot.id,
     };
   }
 
-  // ─── Webhook: call lifecycle ───────────────────────────────────────────────
+  // ─── Webhook: call lifecycle ──────────────────────────────────────────────
 
-  async handleCallStarted(callId: string, agentId: string, fromPhone: string, tenantId: string) {
-    await this.prisma.callSession.create({
-      data: { callId, agentId, fromPhone, tenantId },
-    });
+  async handleCallStarted(
+    callId: string,
+    agentId: string,
+    fromPhone: string,
+    tenantId: string,
+  ) {
+    // Upsert customer eagerly so the call record + the customer record are
+    // both available before the AI starts firing tool calls.
+    await this.resolveCustomer(fromPhone, tenantId);
+
+    try {
+      await this.prisma.callSession.create({
+        data: { callId, agentId, fromPhone, tenantId },
+      });
+    } catch (err) {
+      // Unique constraint on callId — retried webhook is a no-op.
+      if (
+        !(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')
+      ) {
+        throw err;
+      }
+      this.logger.debug(`call_started retry for ${callId} — already recorded`);
+    }
     this.logger.log(`Call started: ${callId} from ${fromPhone}`);
   }
 
   async handleCallEnded(
     callId: string,
     transcript?: string,
-    summary?: string,
     durationMs?: number,
   ) {
-    await this.prisma.callSession.updateMany({
+    const result = await this.prisma.callSession.updateMany({
       where: { callId },
       data: {
         transcript: transcript ?? null,
-        summary: summary ?? null,
         durationMs: durationMs ?? null,
         endedAt: new Date(),
       },
     });
-    this.logger.log(`Call ended: ${callId} (${durationMs}ms)`);
+    if (result.count === 0) {
+      this.logger.warn(`call_ended for unknown callId ${callId}`);
+    } else {
+      this.logger.log(`Call ended: ${callId} (${durationMs ?? 0}ms)`);
+    }
+  }
+
+  async handleCallAnalyzed(callId: string, summary?: string) {
+    const result = await this.prisma.callSession.updateMany({
+      where: { callId },
+      data: { summary: summary ?? null },
+    });
+    if (result.count === 0) {
+      this.logger.warn(`call_analyzed for unknown callId ${callId}`);
+    } else {
+      this.logger.log(`Call analyzed: ${callId}`);
+    }
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
