@@ -12,7 +12,8 @@ const TENANT_SCOPED_MODELS = new Set([
   'Booking',
   'CallSession',
   'RefreshToken',
-  'RetellAgent',
+  // RetellAgent is intentionally excluded — it is looked up by globally-unique
+  // agentId during tenant resolution (before any tenant context exists).
 ]);
 
 @Injectable()

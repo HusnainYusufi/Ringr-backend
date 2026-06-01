@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx prisma *)",
+      "Bash(git pull *)",
+      "Bash(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "Bash(Stop-Process -Force)",
+      "Bash(Start-Sleep -Seconds 1)",
+      "Bash(Write-Output \"done\")",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "Bash(npm run *)",
+      "PowerShell($proc = Get-NetTCPConnection -LocalPort 3087 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Output \"Killed PID $proc\" } else { Write-Output \"No process on 3087\" })",
+      "PowerShell($proc = Get-NetTCPConnection -LocalPort 3087 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Output \"Killed PID $proc\" } else { Write-Output \"Port 3087 is free\" })",
+      "Bash(node -e ' *)"
+    ]
+  }
+}
