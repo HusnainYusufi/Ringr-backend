@@ -14,6 +14,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { BillingService } from '../billing/billing.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { ApiKeysService } from '../api-keys/api-keys.service';
+import { ActionLogService } from '../action-log/action-log.service';
 import {
   CreateTenantDto,
   UpdateTenantDto,
@@ -35,6 +36,7 @@ export class AdminService {
     private readonly billing: BillingService,
     private readonly subscriptions: SubscriptionsService,
     private readonly apiKeys: ApiKeysService,
+    private readonly actionLog: ActionLogService,
   ) {}
 
   // ─── Verticals ────────────────────────────────────────────────────────────
@@ -151,17 +153,14 @@ export class AdminService {
     return safe;
   }
 
-  // ─── Provider onboarding (single-shot) ────────────────────────────────────
+  // ─── Provider onboarding ─────────────────────────────────────────────────────
 
   /**
-   * SUPER_ADMIN clicks "onboard new vet" in the portal. We:
-   *   1. Geocode the address if lat/lng weren't supplied.
-   *   2. In one transaction: create the Provider + a PROVIDER_OWNER staff
-   *      record (placeholder password) + a single-use MagicLink token.
-   *   3. Email the owner a link to set their password.
-   *
-   * If the email fails we still keep the records — the SUPER_ADMIN can resend
-   * the invite. Better to have an orphaned invite than a half-created provider.
+   * SUPER_ADMIN sends only the owner's contact info + vertical assignment.
+   * A placeholder Provider row is created (isSetupComplete = false) so the
+   * system has a FK anchor. The owner fills in clinic details after accepting
+   * their invite — that flip sets isSetupComplete = true and makes the clinic
+   * live for AI bookings.
    */
   async onboardProvider(dto: OnboardProviderDto) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: dto.tenantId } });
@@ -175,38 +174,31 @@ export class AdminService {
     });
     if (existingOwner) throw new ConflictException('Owner email already in use');
 
-    let lat = dto.lat;
-    let lng = dto.lng;
-    if (lat == null || lng == null) {
-      const coords = await this.geo.geocodePostalCode(dto.postalCode);
-      lat = coords.lat;
-      lng = coords.lng;
-    }
-
-    // Placeholder password — guaranteed non-loginable (random 64-byte hex, hashed).
-    // The owner sets a real password via the magic-link flow.
-    const placeholder = crypto.randomBytes(64).toString('hex');
-    const placeholderHash = await bcrypt.hash(placeholder, 12);
-
-    const token = crypto.randomBytes(32).toString('hex'); // 64-char hex, CSPRNG
-    const expirySeconds = this.config.get<number>('magicLink.expirySeconds');
+    const placeholderBytes = crypto.randomBytes(64).toString('hex');
+    const placeholderHash = await bcrypt.hash(placeholderBytes, 12);
+    const token = crypto.randomBytes(32).toString('hex');
+    const expirySeconds = this.config.get<number>('magicLink.expirySeconds') ?? 86400;
     const expiresAt = new Date(Date.now() + expirySeconds * 1000);
 
+    const clinicName = dto.clinicName ?? `${dto.ownerFirstName}'s Clinic`;
+
     const result = await this.prisma.$transaction(async (tx) => {
+      // Placeholder provider — owner completes their profile in the portal.
       const provider = await tx.provider.create({
         data: {
           tenantId: dto.tenantId,
           verticalId: dto.verticalId,
-          name: dto.name,
-          address: dto.address,
-          city: dto.city,
-          province: dto.province ?? 'ON',
-          postalCode: dto.postalCode,
-          lat: lat!,
-          lng: lng!,
-          phone: dto.phone,
-          email: dto.email,
-          bio: dto.bio,
+          name: clinicName,
+          address: '',
+          city: '',
+          province: 'ON',
+          postalCode: '',
+          lat: 0,
+          lng: 0,
+          phone: '',
+          email: dto.ownerEmail,
+          isSetupComplete: false,
+          isActive: false,
         },
       });
 
@@ -219,9 +211,7 @@ export class AdminService {
           firstName: dto.ownerFirstName,
           lastName: dto.ownerLastName,
           role: Role.PROVIDER_OWNER,
-          // Owner can't log in until they accept the invite. The accept flow
-          // flips this to true.
-          isActive: false,
+          isActive: false, // activated on invite accept
         },
       });
 
@@ -239,42 +229,35 @@ export class AdminService {
       return { provider, owner, magicLink };
     });
 
-    // Create the billing record (idempotent) so the provider's first completed
-    // booking can find it.
     await this.billing.ensureBilling(result.provider.id, dto.tenantId);
-
-    // Provision the subscription at the requested tier (defaults to STARTER).
     const subscription = await this.subscriptions.ensureSubscription(
       result.provider.id,
       dto.tenantId,
       dto.tier,
     );
-
-    // Issue the provider's first API key. Plaintext is returned ONCE — surface
-    // it to the SUPER_ADMIN so they can pass it to the vendor securely.
     const apiKey = await this.apiKeys.issueKey(
       result.provider.id,
       dto.tenantId,
       'Initial onboarding key',
     );
 
-    // Email outside the transaction — never let a flaky email API roll back the DB.
-    await this.sendInviteEmail(result.owner, result.provider.name, token, expiresAt);
+    await this.sendInviteEmail(result.owner, clinicName, token, expiresAt);
+
+    await this.actionLog.log({
+      targetType: 'Provider',
+      targetId: result.provider.id,
+      action: 'invite.sent',
+      detail: `Invite sent to ${dto.ownerEmail} for clinic "${clinicName}"`,
+      tenantId: dto.tenantId,
+    });
 
     const { passwordHash: _, ...safeOwner } = result.owner;
     return {
       provider: result.provider,
       owner: safeOwner,
-      invite: {
-        token, // exposed once so portal can copy a fallback link; never returned again
-        expiresAt,
-      },
-      subscription: {
-        tier: subscription.tier,
-        status: subscription.status,
-      },
+      invite: { token, expiresAt },
+      subscription: { tier: subscription.tier, status: subscription.status },
       apiKey: {
-        // Full plaintext returned exactly once — SUPER_ADMIN copies and shares with the vendor.
         plaintext: apiKey.plaintext,
         keyPrefix: apiKey.keyPrefix,
         lastFour: apiKey.lastFour,
@@ -598,6 +581,78 @@ export class AdminService {
         _count: { select: { bookings: true, staff: true } },
       },
     });
+  }
+
+  /**
+   * All providers enriched with booking counts, revenue, and setup status.
+   * This is the "Clients" view SUPER_ADMIN uses to see how each clinic is doing.
+   */
+  async listClientsWithStats(opts: { q?: string; verticalId?: string }) {
+    const where: Prisma.ProviderWhereInput = { isDeleted: false };
+    if (opts.verticalId) where.verticalId = opts.verticalId;
+    if (opts.q) {
+      where.OR = [
+        { name: { contains: opts.q, mode: 'insensitive' } },
+        { city: { contains: opts.q, mode: 'insensitive' } },
+        { email: { contains: opts.q, mode: 'insensitive' } },
+      ];
+    }
+
+    const providers = await this.prisma.provider.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        vertical: { select: { name: true, slug: true } },
+        tenant: { select: { name: true, subdomain: true } },
+        billing: {
+          select: {
+            totalChargedCents: true,
+            freeBookingsUsed: true,
+            paidBookingsCount: true,
+            chargePerBookingCents: true,
+            freeQuota: true,
+          },
+        },
+        subscription: { select: { tier: true, status: true } },
+        _count: { select: { bookings: true, staff: true } },
+      },
+    });
+
+    // Per-provider booking breakdown (confirmed / completed / this month)
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const stats = await Promise.all(
+      providers.map(async (p) => {
+        const [confirmed, completed, thisMonth, upcoming] = await Promise.all([
+          this.prisma.booking.count({ where: { providerId: p.id, status: 'CONFIRMED', isDeleted: false } }),
+          this.prisma.booking.count({ where: { providerId: p.id, status: 'COMPLETED', isDeleted: false } }),
+          this.prisma.booking.count({ where: { providerId: p.id, isDeleted: false, createdAt: { gte: startOfMonth } } }),
+          this.prisma.booking.count({
+            where: {
+              providerId: p.id,
+              status: 'CONFIRMED',
+              isDeleted: false,
+              slot: { startsAt: { gte: now } },
+            },
+          }),
+        ]);
+
+        return {
+          ...p,
+          bookingStats: {
+            total: p._count.bookings,
+            confirmed,
+            completed,
+            thisMonth,
+            upcoming,
+            revenueCents: p.billing?.totalChargedCents ?? 0,
+          },
+        };
+      }),
+    );
+
+    return stats;
   }
 
   /** Providers whose owner hasn't accepted the invite yet. */

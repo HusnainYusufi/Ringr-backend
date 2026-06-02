@@ -21,6 +21,7 @@ import { BillingModule } from './billing/billing.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { ActionLogModule } from './action-log/action-log.module';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { IntegrationsModule } from './integrations/integrations.module';
     SubscriptionsModule,
     ApiKeysModule,
     IntegrationsModule,
+    ActionLogModule,
   ],
   providers: [
     // Apply rate limiting to every route by default. Sensitive endpoints

@@ -120,6 +120,9 @@ model Provider {
   phone      String
   email      String
   bio        String?
+  // false until the owner completes their clinic profile after accepting invite.
+  // The AI voice agent only considers providers where isSetupComplete = true.
+  isSetupComplete Boolean  @default(false)
   isActive   Boolean   @default(true)
   isDeleted  Boolean   @default(false)
   deletedAt  DateTime?
@@ -489,6 +492,31 @@ model WebhookEndpoint {
   @@index([providerId])
   @@index([tenantId])
   @@index([enabled])
+}
+
+// ─── Action / Audit Log ───────────────────────────────────────────────────────
+//
+// Platform-wide audit trail. Every significant action by any actor is recorded
+// here so SUPER_ADMIN can see a live activity feed with full context.
+model ActionLog {
+  id         String   @id @default(cuid())
+  // actor — null means the system itself (queue job, webhook, etc.)
+  actorId    String?
+  actorEmail String?
+  actorRole  String?
+  // subject of the action (provider, tenant, booking…)
+  targetType String   // "Provider" | "Tenant" | "Booking" | "Staff" …
+  targetId   String?
+  // human-readable summary shown in the activity feed
+  action     String   // "invite.sent" | "invite.accepted" | "provider.setup_complete" …
+  detail     String?  // extra context, e.g. clinic name or booking ID
+  tenantId   String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([action])
 }
 
 model WebhookDelivery {

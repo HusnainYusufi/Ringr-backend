@@ -10,6 +10,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
+import { ActionLogService } from '../action-log/action-log.service';
 import {
   CreateTenantDto,
   UpdateTenantDto,
@@ -32,7 +33,10 @@ import { Role } from '@prisma/client';
 @Roles(Role.SUPER_ADMIN)
 @UseInterceptors(TenantBypassInterceptor)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly actionLogService: ActionLogService,
+  ) {}
 
   // ─── Platform stats ───────────────────────────────────────────────────────
 
@@ -155,5 +159,23 @@ export class AdminController {
   @Get('onboarding-pipeline')
   onboardingPipeline() {
     return this.adminService.listOnboardingPipeline();
+  }
+
+  // ─── Activity / audit log ─────────────────────────────────────────────────
+
+  @Get('activity')
+  activityLog(
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: number,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.actionLogService.list({ cursor, limit: limit ? +limit : 50, tenantId });
+  }
+
+  // ─── Clients (providers) with per-client stats ────────────────────────────
+
+  @Get('clients')
+  listClients(@Query('q') q?: string, @Query('verticalId') verticalId?: string) {
+    return this.adminService.listClientsWithStats({ q, verticalId });
   }
 }
