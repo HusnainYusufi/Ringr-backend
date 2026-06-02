@@ -64,6 +64,15 @@ export class ProvidersController {
     return this.providersService.updateMyProvider(user, dto, tenant.id);
   }
 
+  @Post('me/complete-setup')
+  @Roles(Role.PROVIDER_OWNER)
+  completeSetup(
+    @CurrentUser() user: JwtPayload,
+    @CurrentTenant() tenant: Tenant,
+  ) {
+    return this.providersService.completeSetup(user, tenant.id);
+  }
+
   @Post()
   @Roles(Role.TENANT_ADMIN, Role.SUPER_ADMIN)
   create(@Body() dto: CreateProviderDto, @CurrentTenant() tenant: Tenant) {

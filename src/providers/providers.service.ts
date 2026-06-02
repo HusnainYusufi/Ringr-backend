@@ -74,6 +74,44 @@ export class ProvidersService {
     return this.update(user.providerId, dto, tenantId);
   }
 
+  /**
+   * Called when the owner completes their clinic setup wizard.
+   * Validates required fields are filled, then marks the provider as live.
+   */
+  async completeSetup(user: JwtPayload, tenantId: string) {
+    if (!user.providerId) throw new NotFoundException('No provider attached to this account');
+
+    const provider = await this.findOne(user.providerId, tenantId);
+
+    if (
+      !provider.name ||
+      !provider.address ||
+      !provider.city ||
+      !provider.postalCode ||
+      !provider.phone ||
+      provider.lat === 0 ||
+      provider.lng === 0
+    ) {
+      throw new BadRequestException(
+        'Please complete your clinic profile (name, address, coordinates, phone) before going live.',
+      );
+    }
+
+    const hasSchedule = await this.prisma.providerSchedule.findFirst({
+      where: { providerId: provider.id },
+    });
+    if (!hasSchedule) {
+      throw new BadRequestException(
+        'Please set your opening hours before going live.',
+      );
+    }
+
+    return this.prisma.provider.update({
+      where: { id: provider.id },
+      data: { isSetupComplete: true, isActive: true },
+    });
+  }
+
   // ─── Schedule CRUD ─────────────────────────────────────────────────────────
 
   async listSchedules(providerId: string, tenantId: string) {

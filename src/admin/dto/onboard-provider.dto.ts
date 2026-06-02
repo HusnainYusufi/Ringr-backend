@@ -1,64 +1,19 @@
-import {
-  IsString,
-  IsEmail,
-  IsEnum,
-  IsPhoneNumber,
-  IsOptional,
-  IsNumber,
-  Min,
-  Max,
-} from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString } from 'class-validator';
 import { SubscriptionTier } from '@prisma/client';
 
 /**
- * SUPER_ADMIN single-shot onboarding payload.
- *
- * Creates: Provider (with auto-geocoded lat/lng if not supplied) + PROVIDER_OWNER
- * ProviderStaff (no password yet) + MagicLink emailed to the owner's address.
+ * SUPER_ADMIN sends ONLY the clinic owner's details + vertical assignment.
+ * The owner fills in clinic details (address, hours, etc.) themselves after
+ * accepting their invite. This keeps admin out of the owner's business.
  */
 export class OnboardProviderDto {
-  // ── Tenant assignment ──
-  // For now there's a single Ringr tenant; SUPER_ADMIN must still pass it
-  // explicitly so the API is honest about the model and ready for the
-  // (eventual) multi-tenant case.
   @IsString()
   tenantId: string;
 
   @IsString()
   verticalId: string;
 
-  // ── Provider profile ──
-  @IsString()
-  name: string;
-
-  @IsString()
-  address: string;
-
-  @IsString()
-  city: string;
-
-  @IsOptional() @IsString()
-  province?: string;
-
-  @IsString()
-  postalCode: string;
-
-  @IsOptional() @IsNumber() @Min(-90) @Max(90)
-  lat?: number;
-
-  @IsOptional() @IsNumber() @Min(-180) @Max(180)
-  lng?: number;
-
-  @IsPhoneNumber()
-  phone: string;
-
-  @IsEmail()
-  email: string;
-
-  @IsOptional() @IsString()
-  bio?: string;
-
-  // ── Owner contact (receives the magic link) ──
+  // ── Owner contact ──
   @IsEmail()
   ownerEmail: string;
 
@@ -68,8 +23,12 @@ export class OnboardProviderDto {
   @IsString()
   ownerLastName: string;
 
-  // Defaults to STARTER (API + webhooks only) — vendors who want the portal
-  // need PRO. SUPER_ADMIN can flip this later via /admin/subscriptions.
+  // Optional clinic name — if not provided we default to "<FirstName>'s Clinic"
+  // so the provider row is human-readable in the admin list from day 1.
+  @IsOptional()
+  @IsString()
+  clinicName?: string;
+
   @IsOptional()
   @IsEnum(SubscriptionTier)
   tier?: SubscriptionTier;

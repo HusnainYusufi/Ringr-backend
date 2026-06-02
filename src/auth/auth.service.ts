@@ -11,6 +11,8 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { PrismaService } from '../prisma/prisma.service';
+import { ActionLogService } from '../action-log/action-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { JwtPayload } from '../common/decorators/current-user.decorator';
 import { Tenant, Role } from '@prisma/client';
 
@@ -25,6 +27,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly actionLog: ActionLogService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ─── OTP ──────────────────────────────────────────────────────────────────
@@ -269,17 +273,36 @@ export class AuthService {
       this.prisma.providerStaff.update({
         where: { id: link.staffId },
         data: { passwordHash, isActive: true },
+        include: { provider: true },
       }),
       this.prisma.magicLink.update({
         where: { id: link.id },
         data: { consumedAt: new Date() },
       }),
-      // Burn any other outstanding invites for this staff member.
       this.prisma.magicLink.updateMany({
         where: { staffId: link.staffId, consumedAt: null, id: { not: link.id } },
         data: { consumedAt: new Date() },
       }),
     ]);
+
+    // Log the join event + notify platform admin (fire-and-forget)
+    const staffWithProvider = updatedStaff as typeof updatedStaff & {
+      provider?: { name: string };
+    };
+    const clinicName = staffWithProvider.provider?.name ?? 'Unknown clinic';
+
+    await this.actionLog.log({
+      actorId: updatedStaff.id,
+      actorEmail: updatedStaff.email,
+      actorRole: updatedStaff.role,
+      targetType: 'Provider',
+      targetId: updatedStaff.providerId,
+      action: 'invite.accepted',
+      detail: `${updatedStaff.firstName} ${updatedStaff.lastName} joined as owner of "${clinicName}"`,
+      tenantId: updatedStaff.tenantId,
+    });
+
+    this.notifyAdminOfJoin(updatedStaff.email, updatedStaff.firstName, clinicName);
 
     return this.issueTokens(
       {
@@ -296,6 +319,23 @@ export class AuthService {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  private notifyAdminOfJoin(ownerEmail: string, firstName: string, clinicName: string): void {
+    const adminEmail = this.config.get<string>('adminNotificationEmail') ?? 'admin@ringr.ca';
+    this.notifications
+      .sendEmail({
+        to: adminEmail,
+        subject: `🎉 New clinic joined: ${clinicName}`,
+        html: `
+          <h2>A new clinic owner has accepted their invite</h2>
+          <p><strong>Owner:</strong> ${firstName} (${ownerEmail})</p>
+          <p><strong>Clinic:</strong> ${clinicName}</p>
+          <p>They are now setting up their clinic profile in the portal.</p>
+          <p><a href="${this.config.get('portal.baseUrl')}/admin">View in Admin Dashboard →</a></p>
+        `,
+      })
+      .catch((err) => this.logger.warn(`Admin join notification failed: ${err?.message}`));
+  }
 
   private async issueTokens(
     payload: JwtPayload,
