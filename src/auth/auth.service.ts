@@ -118,6 +118,54 @@ export class AuthService {
     );
   }
 
+  // ─── Universal login (no tenant context required) ─────────────────────────
+  //
+  // Finds the staff record by email across all tenants, verifies password,
+  // and issues tokens. This is used by the single login page so callers
+  // don't need to know their API key or subdomain upfront.
+
+  async universalLogin(
+    email: string,
+    password: string,
+  ): Promise<{ accessToken: string; refreshToken: string; role: string; isSetupComplete: boolean }> {
+    const staff = await this.prisma.providerStaff.findFirst({
+      where: { email, isDeleted: false },
+      include: { provider: { select: { isSetupComplete: true } } },
+    });
+
+    if (!staff) throw new UnauthorizedException('Invalid credentials');
+    if (!staff.isActive) {
+      throw new UnauthorizedException(
+        'Your account is not yet active. Please accept your invite email first.',
+      );
+    }
+
+    const valid = await bcrypt.compare(password, staff.passwordHash);
+    if (!valid) throw new UnauthorizedException('Invalid credentials');
+
+    const tokens = await this.issueTokens(
+      {
+        sub: staff.id,
+        tenantId: staff.tenantId,
+        role: staff.role,
+        providerId: staff.providerId,
+        type: 'staff',
+        email: staff.email,
+        firstName: staff.firstName,
+        lastName: staff.lastName,
+      },
+      null,
+      staff.id,
+      staff.tenantId,
+    );
+
+    return {
+      ...tokens,
+      role: staff.role,
+      isSetupComplete: staff.provider?.isSetupComplete ?? false,
+    };
+  }
+
   // ─── Refresh ───────────────────────────────────────────────────────────────
 
   async refresh(

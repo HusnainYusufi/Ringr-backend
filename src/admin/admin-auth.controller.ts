@@ -64,6 +64,9 @@ export class AdminAuthController {
       tenantId: admin[0].tenantId,
       role: Role.SUPER_ADMIN,
       type: 'staff',
+      email: admin[0].email,
+      firstName: admin[0].firstName,
+      lastName: admin[0].lastName,
     };
 
     const accessToken = this.jwt.sign(payload, {

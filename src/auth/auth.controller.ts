@@ -130,6 +130,29 @@ export class AuthController {
     return { loggedOut: true };
   }
 
+  // ─── Universal login (no tenant / API key required) ──────────────────────
+  //
+  // Single endpoint for ALL staff (SUPER_ADMIN, TENANT_ADMIN, PROVIDER_OWNER,
+  // PROVIDER_STAFF). Finds the account by email, returns role so the frontend
+  // can redirect to the correct portal without tabs or API key fields.
+  @Public()
+  @SkipTenant()
+  @Throttle({ short: { limit: 5, ttl: 60_000 }, long: { limit: 20, ttl: 60 * 60_000 } })
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  async login(
+    @Body() dto: StaffLoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.universalLogin(dto.email, dto.password);
+    res.cookie('refreshToken', result.refreshToken, REFRESH_COOKIE_OPTIONS);
+    return {
+      accessToken: result.accessToken,
+      role: result.role,
+      isSetupComplete: result.isSetupComplete,
+    };
+  }
+
   // ─── Accept magic-link invite ─────────────────────────────────────────────
   //
   // Owner clicks the email link → portal POSTs token + new password here.
