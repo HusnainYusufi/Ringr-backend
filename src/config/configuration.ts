@@ -24,6 +24,7 @@ export default () => ({
   retell: {
     apiKey: process.env.RETELL_API_KEY,
     webhookSecret: process.env.RETELL_WEBHOOK_SECRET,
+    agentId: process.env.RETELL_AGENT_ID,
   },
 
   twilio: {
