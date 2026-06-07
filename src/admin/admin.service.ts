@@ -589,7 +589,7 @@ export class AdminService {
    * This is the "Clients" view SUPER_ADMIN uses to see how each clinic is doing.
    */
   async listClientsWithStats(opts: { q?: string; verticalId?: string }) {
-    const where: Prisma.ProviderWhereInput = { isDeleted: false };
+    const where: Prisma.ProviderWhereInput = { isDeleted: false, id: { not: 'provider-platform-admin' } };
     if (opts.verticalId) where.verticalId = opts.verticalId;
     if (opts.q) {
       where.OR = [
@@ -665,7 +665,7 @@ export class AdminService {
 
     await this.prisma.$transaction([
       this.prisma.providerStaff.updateMany({
-        where: { providerId, isDeleted: false },
+        where: { providerId, isDeleted: false, role: { not: Role.SUPER_ADMIN } },
         data: { isActive: false, isDeleted: true },
       }),
       this.prisma.provider.update({
