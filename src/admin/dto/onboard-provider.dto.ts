@@ -7,8 +7,8 @@ import { SubscriptionTier } from '@prisma/client';
  * accepting their invite. This keeps admin out of the owner's business.
  */
 export class OnboardProviderDto {
-  @IsString()
-  tenantId: string;
+  // tenantId is now auto-resolved from verticalId on the backend.
+  // Admin only picks the vertical — no need to know about tenants.
 
   @IsString()
   verticalId: string;

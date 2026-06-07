@@ -163,11 +163,12 @@ export class AdminService {
    * live for AI bookings.
    */
   async onboardProvider(dto: OnboardProviderDto) {
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: dto.tenantId } });
-    if (!tenant) throw new NotFoundException('Tenant not found');
-
     const vertical = await this.prisma.vertical.findUnique({ where: { id: dto.verticalId } });
     if (!vertical) throw new NotFoundException('Vertical not found');
+
+    // Auto-resolve tenant from vertical — one tenant per vertical in the marketplace model.
+    const tenant = await this.prisma.tenant.findFirst({ where: { verticalId: dto.verticalId } });
+    if (!tenant) throw new NotFoundException(`No tenant configured for vertical "${vertical.name}". Create one in the Tenants page first.`);
 
     const existingOwner = await this.prisma.providerStaff.findFirst({
       where: { email: dto.ownerEmail, isDeleted: false },
@@ -186,7 +187,7 @@ export class AdminService {
       // Placeholder provider — owner completes their profile in the portal.
       const provider = await tx.provider.create({
         data: {
-          tenantId: dto.tenantId,
+          tenantId: tenant.id,
           verticalId: dto.verticalId,
           name: clinicName,
           address: '',
@@ -204,7 +205,7 @@ export class AdminService {
 
       const owner = await tx.providerStaff.create({
         data: {
-          tenantId: dto.tenantId,
+          tenantId: tenant.id,
           providerId: provider.id,
           email: dto.ownerEmail,
           passwordHash: placeholderHash,
@@ -218,7 +219,7 @@ export class AdminService {
       const magicLink = await tx.magicLink.create({
         data: {
           token,
-          tenantId: dto.tenantId,
+          tenantId: tenant.id,
           staffId: owner.id,
           email: dto.ownerEmail,
           purpose: 'ONBOARDING',
@@ -229,15 +230,15 @@ export class AdminService {
       return { provider, owner, magicLink };
     });
 
-    await this.billing.ensureBilling(result.provider.id, dto.tenantId);
+    await this.billing.ensureBilling(result.provider.id, tenant.id);
     const subscription = await this.subscriptions.ensureSubscription(
       result.provider.id,
-      dto.tenantId,
+      tenant.id,
       dto.tier,
     );
     const apiKey = await this.apiKeys.issueKey(
       result.provider.id,
-      dto.tenantId,
+      tenant.id,
       'Initial onboarding key',
     );
 
@@ -248,7 +249,7 @@ export class AdminService {
       targetId: result.provider.id,
       action: 'invite.sent',
       detail: `Invite sent to ${dto.ownerEmail} for clinic "${clinicName}"`,
-      tenantId: dto.tenantId,
+      tenantId: tenant.id,
     });
 
     const { passwordHash: _, ...safeOwner } = result.owner;
