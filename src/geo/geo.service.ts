@@ -98,7 +98,114 @@ export class GeoService {
     }
   }
 
-  // ─── Provider proximity search ────────────────────────────────────────────
+  // ─── Global marketplace search (no tenant filter) ────────────────────────
+  // Used by the single global Retell agent — searches ALL active providers
+  // across every tenant, filtered only by vertical and distance.
+
+  async findProvidersGlobalNear(
+    postalCode: string,
+    date: Date,
+    radiusKm = SEARCH_RADIUS_KM,
+    verticalSlug?: string,
+  ): Promise<ProviderWithSlot[]> {
+    const { lat, lng } = await this.geocodePostalCode(postalCode);
+
+    const dayStart = new Date(date);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(date);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    let verticalId: string | null = null;
+    if (verticalSlug) {
+      const canonical = normalizeVerticalSlug(verticalSlug)!;
+      const vertical = await this.prisma.vertical.findUnique({
+        where: { slug: canonical },
+        select: { id: true },
+      });
+      if (!vertical) {
+        this.logger.warn(
+          `Unknown vertical slug "${verticalSlug}" (normalized: "${canonical}") — returning no providers`,
+        );
+        return [];
+      }
+      verticalId = vertical.id;
+    }
+
+    const providers = verticalId
+      ? await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
+          SELECT
+            id,
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) AS distance_km
+          FROM "Provider"
+          WHERE
+            "isDeleted" = false
+            AND "isActive" = true
+            AND "isSetupComplete" = true
+            AND "verticalId" = ${verticalId}
+          HAVING
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) <= ${radiusKm}
+          ORDER BY distance_km ASC
+          LIMIT 10
+        `
+      : await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
+          SELECT
+            id,
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) AS distance_km
+          FROM "Provider"
+          WHERE
+            "isDeleted" = false
+            AND "isActive" = true
+            AND "isSetupComplete" = true
+          HAVING
+            (6371 * acos(
+              cos(radians(${lat})) * cos(radians(lat)) *
+              cos(radians(lng) - radians(${lng})) +
+              sin(radians(${lat})) * sin(radians(lat))
+            )) <= ${radiusKm}
+          ORDER BY distance_km ASC
+          LIMIT 10
+        `;
+
+    const results: ProviderWithSlot[] = [];
+
+    for (const row of providers) {
+      // Raw provider lookup — bypass mode means no tenant filter; id is a UUID (globally unique).
+      const provider = await this.prisma.$queryRaw<Provider[]>`
+        SELECT * FROM "Provider" WHERE id = ${row.id} LIMIT 1
+      `.then((rows) => rows[0] ?? null);
+      if (!provider) continue;
+
+      // Slot lookup — bypass mode, filter by providerId + status + time range.
+      const slot = await this.prisma.$queryRaw<Slot[]>`
+        SELECT * FROM "Slot"
+        WHERE "providerId" = ${provider.id}
+          AND status = 'AVAILABLE'
+          AND "startsAt" >= ${dayStart}
+          AND "startsAt" <= ${dayEnd}
+        ORDER BY "startsAt" ASC
+        LIMIT 1
+      `.then((rows) => rows[0] ?? null);
+      if (!slot) continue;
+
+      results.push({ provider, slot, distanceKm: Number(row.distance_km) });
+    }
+
+    return results;
+  }
+
+  // ─── Per-tenant provider proximity search (kept for backwards compat) ─────
 
   async findProvidersNear(
     postalCode: string,

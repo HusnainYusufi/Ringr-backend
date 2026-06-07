@@ -1,7 +1,6 @@
 import { IsObject, IsOptional, IsPhoneNumber, IsString } from 'class-validator';
 
 // Retell wraps every tool call (and every webhook) with this `call` envelope.
-// from_number is the caller's phone — that's how we identify them. No OTP.
 export class RetellCallDto {
   @IsString()
   call_id: string;
@@ -22,12 +21,14 @@ export class GetSubjectsToolDto {
   @IsObject()
   call: RetellCallDto;
 
-  // Optional — if not provided we fall back to call.from_number. The AI can
-  // pass it explicitly if it needs to (e.g. operator looking up a different
-  // number), but the standard path is "use whoever's on the line".
   @IsOptional()
   @IsPhoneNumber()
   phone?: string;
+
+  // Needed in global-agent mode — tells us which tenant to search subjects in.
+  @IsOptional()
+  @IsString()
+  provider_id?: string;
 }
 
 export class FindProvidersToolDto {
@@ -37,9 +38,7 @@ export class FindProvidersToolDto {
   @IsString()
   postal_code: string;
 
-  // Required in practice — without it we can't tell a pet booking from a
-  // dental booking. Accepts shorthand: vet/dentist/auto get normalized to
-  // the canonical slug in GeoService.
+  // "vet", "dental", "auto" etc. — normalised to canonical slug in GeoService.
   @IsOptional()
   @IsString()
   vertical_slug?: string;
@@ -54,7 +53,7 @@ export class FindProvidersToolDto {
 
   @IsOptional()
   @IsString()
-  preferred_date?: string; // ISO date or datetime
+  preferred_date?: string;
 }
 
 export class HoldSlotToolDto {
@@ -64,12 +63,10 @@ export class HoldSlotToolDto {
   @IsString()
   slot_id: string;
 
-  // Optional — backend resolves customer from call.from_number. We accept this
-  // field for back-compat with Retell agents that still send it, but ignore it
-  // if from_number is present (the source of truth).
-  @IsOptional()
+  // Required in global-agent mode — tells us which provider (and therefore
+  // tenant) this slot belongs to. The AI receives provider_id from find_providers.
   @IsString()
-  customer_id?: string;
+  provider_id: string;
 }
 
 export class ConfirmBookingToolDto {
@@ -79,10 +76,9 @@ export class ConfirmBookingToolDto {
   @IsString()
   slot_id: string;
 
-  // See HoldSlotToolDto.customer_id — kept optional for the same reason.
-  @IsOptional()
+  // Required in global-agent mode — same reason as HoldSlotToolDto.
   @IsString()
-  customer_id?: string;
+  provider_id: string;
 
   @IsOptional()
   @IsString()

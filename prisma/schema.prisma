@@ -308,8 +308,10 @@ model Booking {
 
 model CallSession {
   id         String    @id @default(cuid())
-  tenantId   String
-  tenant     Tenant    @relation(fields: [tenantId], references: [id])
+  // Nullable — global-agent calls have no tenant context at call_started time.
+  // Populated on confirm_booking when the provider (and therefore tenant) is known.
+  tenantId   String?
+  tenant     Tenant?   @relation(fields: [tenantId], references: [id])
   callId     String    @unique
   agentId    String
   fromPhone  String
@@ -322,7 +324,7 @@ model CallSession {
   endedAt    DateTime?
 
   @@index([tenantId])
-  @@index([tenantId, fromPhone])
+  @@index([callId])
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
