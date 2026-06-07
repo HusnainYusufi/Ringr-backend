@@ -51,6 +51,6 @@ export class WebCallController {
     }
 
     const data = await res.json();
-    return { data: { accessToken: data.access_token, callId: data.call_id } };
+    return { accessToken: data.access_token, callId: data.call_id };
   }
 }
