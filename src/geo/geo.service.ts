@@ -110,10 +110,11 @@ export class GeoService {
   ): Promise<ProviderWithSlot[]> {
     const { lat, lng } = await this.geocodePostalCode(postalCode);
 
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(23, 59, 59, 999);
+    // Search from now (or start of requested date) up to 7 days ahead so the
+    // AI finds the next available slot even if nothing is open today.
+    const slotFrom = date > new Date() ? date : new Date();
+    const slotTo = new Date(slotFrom);
+    slotTo.setDate(slotTo.getDate() + 7);
 
     let verticalId: string | null = null;
     if (verticalSlug) {
@@ -192,8 +193,8 @@ export class GeoService {
         SELECT * FROM "Slot"
         WHERE "providerId" = ${provider.id}
           AND status = 'AVAILABLE'
-          AND "startsAt" >= ${dayStart}
-          AND "startsAt" <= ${dayEnd}
+          AND "startsAt" >= ${slotFrom}
+          AND "startsAt" <= ${slotTo}
         ORDER BY "startsAt" ASC
         LIMIT 1
       `.then((rows) => rows[0] ?? null);
