@@ -59,6 +59,17 @@ export class TenantService {
       }
     }
 
+    // Priority 4: JWT payload tenantId (provider portal — Bearer token, no API key)
+    // Guards run before interceptors, so req.user is already populated by JwtAuthGuard.
+    const jwtTenantId = (req.user as { tenantId?: string } | undefined)?.tenantId;
+    if (jwtTenantId) {
+      const tenant = await this.findById(jwtTenantId);
+      if (tenant) {
+        if (!tenant.isActive) throw new UnauthorizedException('Tenant is inactive');
+        return tenant;
+      }
+    }
+
     throw new UnauthorizedException('Could not resolve tenant');
   }
 
