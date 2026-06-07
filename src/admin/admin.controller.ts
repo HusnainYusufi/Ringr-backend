@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -115,6 +116,12 @@ export class AdminController {
   @Post('providers/staff/:staffId/resend-invite')
   resendProviderInvite(@Param('staffId') staffId: string) {
     return this.adminService.resendProviderInvite(staffId);
+  }
+
+  // Soft-delete a provider and deactivate all its staff.
+  @Delete('providers/:id')
+  deleteProvider(@Param('id') id: string) {
+    return this.adminService.deleteProvider(id);
   }
 
   // ─── Unified SUPER_ADMIN dashboard ────────────────────────────────────────

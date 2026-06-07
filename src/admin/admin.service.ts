@@ -656,6 +656,27 @@ export class AdminService {
     return stats;
   }
 
+  /** Soft-delete a provider and deactivate all its staff. */
+  async deleteProvider(providerId: string) {
+    const provider = await this.prisma.provider.findUnique({
+      where: { id: providerId },
+    });
+    if (!provider) throw new NotFoundException('Provider not found');
+
+    await this.prisma.$transaction([
+      this.prisma.providerStaff.updateMany({
+        where: { providerId, isDeleted: false },
+        data: { isActive: false, isDeleted: true },
+      }),
+      this.prisma.provider.update({
+        where: { id: providerId },
+        data: { isActive: false, isDeleted: true },
+      }),
+    ]);
+
+    return { deleted: true };
+  }
+
   /** Providers whose owner hasn't accepted the invite yet. */
   async listOnboardingPipeline() {
     const pendingLinks = await this.prisma.magicLink.findMany({
