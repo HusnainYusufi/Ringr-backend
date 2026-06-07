@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsInt,
   IsOptional,
@@ -6,7 +7,9 @@ import {
   Matches,
   Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -42,7 +45,8 @@ export class UpdateScheduleDto {
 }
 
 export class ReplaceWeekScheduleDto {
-  // Convenience: replace the entire weekly schedule for a provider in one call.
-  // Used by the portal "set my opening hours" page.
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateScheduleDto)
   schedules: CreateScheduleDto[];
 }
