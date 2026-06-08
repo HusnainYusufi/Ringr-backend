@@ -107,12 +107,15 @@ export class VoiceController {
   @Post('tools/find-providers')
   @HttpCode(HttpStatus.OK)
   async findProviders(@Body() body: FindProvidersToolDto) {
+    this.logger.log(`find_providers called — postal_code="${body.postal_code}" vertical_slug="${body.vertical_slug}" preferred_date="${body.preferred_date}" raw_body=${JSON.stringify(body)}`);
     try {
-      return await this.voiceService.findProviders(
+      const result = await this.voiceService.findProviders(
         body.postal_code,
         body.vertical_slug,
         body.preferred_date,
       );
+      this.logger.log(`find_providers result — options=${result.options?.length ?? 0} result="${result.result}"`);
+      return result;
     } catch (err) {
       this.logger.error(`find_providers failed: ${err instanceof Error ? err.message : err}`);
       return { result: `I'm having trouble searching for providers right now. Could you give me a moment?`, options: [] };

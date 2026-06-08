@@ -108,13 +108,17 @@ export class GeoService {
     radiusKm = SEARCH_RADIUS_KM,
     verticalSlug?: string,
   ): Promise<ProviderWithSlot[]> {
+    this.logger.log(`[findProvidersGlobalNear] postalCode="${postalCode}" verticalSlug="${verticalSlug}" date="${date.toISOString()}"`);
+
     const { lat, lng } = await this.geocodePostalCode(postalCode);
+    this.logger.log(`[findProvidersGlobalNear] geocoded to lat=${lat} lng=${lng}`);
 
     // Search from now (or start of requested date) up to 7 days ahead so the
     // AI finds the next available slot even if nothing is open today.
     const slotFrom = date > new Date() ? date : new Date();
     const slotTo = new Date(slotFrom);
     slotTo.setDate(slotTo.getDate() + 7);
+    this.logger.log(`[findProvidersGlobalNear] slot window: ${slotFrom.toISOString()} → ${slotTo.toISOString()}`);
 
     let verticalId: string | null = null;
     if (verticalSlug) {
@@ -179,6 +183,8 @@ export class GeoService {
           LIMIT 10
         `;
 
+    this.logger.log(`[findProvidersGlobalNear] Haversine SQL returned ${providers.length} provider(s): ${providers.map(p => `${p.id}(${Number(p.distance_km).toFixed(2)}km)`).join(', ')}`);
+
     const results: ProviderWithSlot[] = [];
 
     for (const row of providers) {
@@ -186,7 +192,10 @@ export class GeoService {
       const provider = await this.prisma.$queryRaw<Provider[]>`
         SELECT * FROM "Provider" WHERE id = ${row.id} LIMIT 1
       `.then((rows) => rows[0] ?? null);
-      if (!provider) continue;
+      if (!provider) {
+        this.logger.warn(`[findProvidersGlobalNear] provider ${row.id} not found after SQL`);
+        continue;
+      }
 
       // Slot lookup — bypass mode, filter by providerId + status + time range.
       const slot = await this.prisma.$queryRaw<Slot[]>`
@@ -198,11 +207,17 @@ export class GeoService {
         ORDER BY "startsAt" ASC
         LIMIT 1
       `.then((rows) => rows[0] ?? null);
-      if (!slot) continue;
 
+      if (!slot) {
+        this.logger.warn(`[findProvidersGlobalNear] no AVAILABLE slot for provider ${provider.name} in window ${slotFrom.toISOString()} → ${slotTo.toISOString()}`);
+        continue;
+      }
+
+      this.logger.log(`[findProvidersGlobalNear] matched: ${provider.name} — slot ${slot.id} at ${new Date(slot.startsAt).toISOString()}`);
       results.push({ provider, slot, distanceKm: Number(row.distance_km) });
     }
 
+    this.logger.log(`[findProvidersGlobalNear] returning ${results.length} result(s)`);
     return results;
   }
 
