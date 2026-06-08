@@ -26,9 +26,14 @@ import { RetellWebhookDto } from './dto/webhook.dto';
 /**
  * Single global Retell agent endpoint. One phone number → all verticals.
  *
- * Auth is HMAC (RetellWebhookGuard) — not JWT. TenantInterceptor is kept so
- * AsyncLocalStorage is initialised, but @SkipTenant() tells it to set
- * bypassTenant=true instead of resolving a tenant from the agent_id.
+ * HMAC guard (RetellWebhookGuard) is applied ONLY to /voice/webhook because
+ * Retell signs lifecycle events but does NOT sign custom function-tool calls
+ * (/voice/tools/*). Applying the guard to the whole controller blocks every
+ * tool call with "Missing Retell signature".
+ *
+ * TenantInterceptor is kept so AsyncLocalStorage is initialised, but
+ * @SkipTenant() tells it to set bypassTenant=true instead of resolving a
+ * tenant from the agent_id.
  *
  * Tenant context is derived per-request from the provider_id the AI passes
  * back after calling find_providers. This means:
@@ -41,7 +46,6 @@ import { RetellWebhookDto } from './dto/webhook.dto';
 @SkipThrottle()
 @SkipTransform()
 @SkipTenant()
-@UseGuards(RetellWebhookGuard)
 @UseInterceptors(TenantInterceptor)
 export class VoiceController {
   private readonly logger = new Logger(VoiceController.name);
@@ -51,6 +55,7 @@ export class VoiceController {
   // ─── Call lifecycle webhook ──────────────────────────────────────────────
 
   @Post('webhook')
+  @UseGuards(RetellWebhookGuard)
   @HttpCode(HttpStatus.OK)
   async handleWebhook(@Body() body: RetellWebhookDto) {
     const { event, call } = body;
