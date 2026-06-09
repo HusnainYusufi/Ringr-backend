@@ -127,10 +127,17 @@ export class VoiceService {
   // "auto") and a postal code; we return the 3 nearest clinics with open slots.
 
   async findProviders(
-    postalCode: string,
+    postalCode: string | undefined,
     verticalSlug?: string,
     preferredDate?: string,
   ): Promise<FindProvidersResult> {
+    if (!postalCode) {
+      return {
+        result: `I need your postal code to search for nearby providers. What's your postal code?`,
+        options: [],
+      };
+    }
+
     const searchDate = preferredDate ? new Date(preferredDate) : new Date();
 
     const results = await this.geo.findProvidersGlobalNear(

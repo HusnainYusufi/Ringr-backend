@@ -35,8 +35,9 @@ export class FindProvidersToolDto {
   @IsObject()
   call: RetellCallDto;
 
+  @IsOptional()
   @IsString()
-  postal_code: string;
+  postal_code?: string;
 
   // "vet", "dental", "auto" etc. — normalised to canonical slug in GeoService.
   @IsOptional()
