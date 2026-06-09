@@ -136,49 +136,46 @@ export class GeoService {
       verticalId = vertical.id;
     }
 
+    // PostgreSQL rejects HAVING without GROUP BY — use a subquery instead.
+    // LEAST(1.0, …) guards acos against floating-point values slightly > 1
+    // that can occur when two points are nearly identical.
     const providers = verticalId
       ? await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
-          SELECT
-            id,
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) AS distance_km
-          FROM "Provider"
-          WHERE
-            "isDeleted" = false
-            AND "isActive" = true
-            AND "isSetupComplete" = true
-            AND "verticalId" = ${verticalId}
-          HAVING
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) <= ${radiusKm}
+          SELECT id, distance_km FROM (
+            SELECT
+              id,
+              (6371 * acos(LEAST(1.0,
+                cos(radians(${lat})) * cos(radians(lat)) *
+                cos(radians(lng) - radians(${lng})) +
+                sin(radians(${lat})) * sin(radians(lat))
+              ))) AS distance_km
+            FROM "Provider"
+            WHERE
+              "isDeleted" = false
+              AND "isActive" = true
+              AND "isSetupComplete" = true
+              AND "verticalId" = ${verticalId}
+          ) AS sub
+          WHERE distance_km <= ${radiusKm}
           ORDER BY distance_km ASC
           LIMIT 10
         `
       : await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
-          SELECT
-            id,
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) AS distance_km
-          FROM "Provider"
-          WHERE
-            "isDeleted" = false
-            AND "isActive" = true
-            AND "isSetupComplete" = true
-          HAVING
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) <= ${radiusKm}
+          SELECT id, distance_km FROM (
+            SELECT
+              id,
+              (6371 * acos(LEAST(1.0,
+                cos(radians(${lat})) * cos(radians(lat)) *
+                cos(radians(lng) - radians(${lng})) +
+                sin(radians(${lat})) * sin(radians(lat))
+              ))) AS distance_km
+            FROM "Provider"
+            WHERE
+              "isDeleted" = false
+              AND "isActive" = true
+              AND "isSetupComplete" = true
+          ) AS sub
+          WHERE distance_km <= ${radiusKm}
           ORDER BY distance_km ASC
           LIMIT 10
         `;
@@ -258,51 +255,43 @@ export class GeoService {
       verticalId = vertical.id;
     }
 
-    // Haversine distance formula in raw SQL — must run inside the DB for performance.
-    // Tagged-template params are parameterized by Prisma; safe against SQL injection.
     const providers = verticalId
       ? await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
-          SELECT
-            id,
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) AS distance_km
-          FROM "Provider"
-          WHERE
-            "tenantId" = ${tenantId}
-            AND "isDeleted" = false
-            AND "isActive" = true
-            AND "verticalId" = ${verticalId}
-          HAVING
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) <= ${radiusKm}
+          SELECT id, distance_km FROM (
+            SELECT
+              id,
+              (6371 * acos(LEAST(1.0,
+                cos(radians(${lat})) * cos(radians(lat)) *
+                cos(radians(lng) - radians(${lng})) +
+                sin(radians(${lat})) * sin(radians(lat))
+              ))) AS distance_km
+            FROM "Provider"
+            WHERE
+              "tenantId" = ${tenantId}
+              AND "isDeleted" = false
+              AND "isActive" = true
+              AND "verticalId" = ${verticalId}
+          ) AS sub
+          WHERE distance_km <= ${radiusKm}
           ORDER BY distance_km ASC
           LIMIT 10
         `
       : await this.prisma.$queryRaw<Array<{ id: string; distance_km: number }>>`
-          SELECT
-            id,
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) AS distance_km
-          FROM "Provider"
-          WHERE
-            "tenantId" = ${tenantId}
-            AND "isDeleted" = false
-            AND "isActive" = true
-          HAVING
-            (6371 * acos(
-              cos(radians(${lat})) * cos(radians(lat)) *
-              cos(radians(lng) - radians(${lng})) +
-              sin(radians(${lat})) * sin(radians(lat))
-            )) <= ${radiusKm}
+          SELECT id, distance_km FROM (
+            SELECT
+              id,
+              (6371 * acos(LEAST(1.0,
+                cos(radians(${lat})) * cos(radians(lat)) *
+                cos(radians(lng) - radians(${lng})) +
+                sin(radians(${lat})) * sin(radians(lat))
+              ))) AS distance_km
+            FROM "Provider"
+            WHERE
+              "tenantId" = ${tenantId}
+              AND "isDeleted" = false
+              AND "isActive" = true
+          ) AS sub
+          WHERE distance_km <= ${radiusKm}
           ORDER BY distance_km ASC
           LIMIT 10
         `;
