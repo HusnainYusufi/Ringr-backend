@@ -98,11 +98,13 @@ export class VoiceController {
   @HttpCode(HttpStatus.OK)
   async getSubjects(@Body() body: GetSubjectsToolDto) {
     try {
-      const phone = body.phone ?? body.call?.from_number;
+      // Retell nests params under args; fall back to top-level for direct calls.
+      const p = body.args ?? body;
+      const phone = p.phone ?? body.call?.from_number;
       if (!phone) {
         return { result: `I'm having trouble identifying you. Could you try calling again?`, subjects: [] };
       }
-      return await this.voiceService.getSubjects(phone, body.provider_id);
+      return await this.voiceService.getSubjects(phone, p.provider_id);
     } catch (err) {
       this.logger.error(`get_subjects failed: ${err instanceof Error ? err.message : err}`);
       return { result: `I'm having trouble looking up your records right now.`, subjects: [] };
@@ -112,12 +114,14 @@ export class VoiceController {
   @Post('tools/find-providers')
   @HttpCode(HttpStatus.OK)
   async findProviders(@Body() body: FindProvidersToolDto) {
-    this.logger.log(`find_providers called — postal_code="${body.postal_code}" vertical_slug="${body.vertical_slug}" preferred_date="${body.preferred_date}" raw_body=${JSON.stringify(body)}`);
+    // Retell nests params under args; fall back to top-level for direct calls.
+    const p = body.args ?? body;
+    this.logger.log(`find_providers called — postal_code="${p.postal_code}" vertical_slug="${p.vertical_slug}" preferred_date="${p.preferred_date}" raw_body=${JSON.stringify(body)}`);
     try {
       const result = await this.voiceService.findProviders(
-        body.postal_code,
-        body.vertical_slug,
-        body.preferred_date,
+        p.postal_code,
+        p.vertical_slug,
+        p.preferred_date,
       );
       this.logger.log(`find_providers result — options=${result.options?.length ?? 0} result="${result.result}"`);
       return result;
@@ -131,11 +135,15 @@ export class VoiceController {
   @HttpCode(HttpStatus.OK)
   async holdSlot(@Body() body: HoldSlotToolDto) {
     try {
+      const p = body.args ?? body;
       const phone = body.call?.from_number;
       if (!phone) {
         return { result: `I'm having trouble identifying you. Could you try calling again?`, slot_id: null };
       }
-      return await this.voiceService.holdSlot(body.slot_id, body.provider_id, phone);
+      if (!p.slot_id || !p.provider_id) {
+        return { result: `I'm missing the slot or provider details. Let me search again.`, slot_id: null };
+      }
+      return await this.voiceService.holdSlot(p.slot_id, p.provider_id, phone);
     } catch (err) {
       this.logger.error(`hold_slot failed: ${err instanceof Error ? err.message : err}`);
       return { result: `I couldn't hold that slot right now. Let me find you another option.`, slot_id: null };
@@ -146,21 +154,25 @@ export class VoiceController {
   @HttpCode(HttpStatus.OK)
   async confirmBooking(@Body() body: ConfirmBookingToolDto) {
     try {
+      const p = body.args ?? body;
       const phone = body.call?.from_number;
       if (!phone) {
-        return { result: `I'm having trouble identifying you. Could you try calling again?`, booking_id: null, slot_id: body.slot_id };
+        return { result: `I'm having trouble identifying you. Could you try calling again?`, booking_id: null, slot_id: p.slot_id };
+      }
+      if (!p.slot_id || !p.provider_id) {
+        return { result: `I'm missing the slot or provider details. Let me search again.`, booking_id: null, slot_id: null };
       }
       return await this.voiceService.confirmBooking(
-        body.slot_id,
-        body.provider_id,
+        p.slot_id,
+        p.provider_id,
         phone,
-        body.subject_id,
-        body.extra_fields,
-        body.notes,
+        p.subject_id,
+        p.extra_fields,
+        p.notes,
       );
     } catch (err) {
       this.logger.error(`confirm_booking failed: ${err instanceof Error ? err.message : err}`);
-      return { result: `I couldn't confirm that booking. Let me try again.`, booking_id: null, slot_id: body.slot_id };
+      return { result: `I couldn't confirm that booking. Let me try again.`, booking_id: null, slot_id: (body.args ?? body).slot_id };
     }
   }
 }

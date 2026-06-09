@@ -17,15 +17,21 @@ export class RetellCallDto {
   to_number?: string;
 }
 
+// Retell sends tool params nested under "args": { ... }.
+// All tool DTOs carry this field so NestJS whitelist mode doesn't strip it.
+// Controllers extract from body.args first, falling back to top-level for
+// direct / test calls.
 export class GetSubjectsToolDto {
   @IsObject()
   call: RetellCallDto;
 
   @IsOptional()
+  args?: Record<string, any>;
+
+  @IsOptional()
   @IsPhoneNumber()
   phone?: string;
 
-  // Needed in global-agent mode — tells us which tenant to search subjects in.
   @IsOptional()
   @IsString()
   provider_id?: string;
@@ -36,10 +42,12 @@ export class FindProvidersToolDto {
   call: RetellCallDto;
 
   @IsOptional()
+  args?: Record<string, any>;
+
+  @IsOptional()
   @IsString()
   postal_code?: string;
 
-  // "vet", "dental", "auto" etc. — normalised to canonical slug in GeoService.
   @IsOptional()
   @IsString()
   vertical_slug?: string;
@@ -61,25 +69,34 @@ export class HoldSlotToolDto {
   @IsObject()
   call: RetellCallDto;
 
-  @IsString()
-  slot_id: string;
+  @IsOptional()
+  args?: Record<string, any>;
 
-  // Required in global-agent mode — tells us which provider (and therefore
-  // tenant) this slot belongs to. The AI receives provider_id from find_providers.
+  // Optional at DTO level — Retell nests these under args.
+  // Controller validates presence after extracting from the right location.
+  @IsOptional()
   @IsString()
-  provider_id: string;
+  slot_id?: string;
+
+  @IsOptional()
+  @IsString()
+  provider_id?: string;
 }
 
 export class ConfirmBookingToolDto {
   @IsObject()
   call: RetellCallDto;
 
-  @IsString()
-  slot_id: string;
+  @IsOptional()
+  args?: Record<string, any>;
 
-  // Required in global-agent mode — same reason as HoldSlotToolDto.
+  @IsOptional()
   @IsString()
-  provider_id: string;
+  slot_id?: string;
+
+  @IsOptional()
+  @IsString()
+  provider_id?: string;
 
   @IsOptional()
   @IsString()
