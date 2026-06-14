@@ -100,10 +100,7 @@ export class VoiceController {
     try {
       // Retell nests params under args; fall back to top-level for direct calls.
       const p = body.args ?? body;
-      const phone = p.phone ?? body.call?.from_number;
-      if (!phone) {
-        return { result: `I'm having trouble identifying you. Could you try calling again?`, subjects: [] };
-      }
+      const phone = p.phone ?? body.call?.from_number || `webcall:${body.call?.call_id}`;
       return await this.voiceService.getSubjects(phone, p.provider_id);
     } catch (err) {
       this.logger.error(`get_subjects failed: ${err instanceof Error ? err.message : err}`);
@@ -136,10 +133,8 @@ export class VoiceController {
   async holdSlot(@Body() body: HoldSlotToolDto) {
     try {
       const p = body.args ?? body;
-      const phone = body.call?.from_number;
-      if (!phone) {
-        return { result: `I'm having trouble identifying you. Could you try calling again?`, slot_id: null };
-      }
+      // Web calls have no from_number — use call_id as a stable per-session identifier.
+      const phone = body.call?.from_number || `webcall:${body.call?.call_id}`;
       if (!p.slot_id || !p.provider_id) {
         return { result: `I'm missing the slot or provider details. Let me search again.`, slot_id: null };
       }
@@ -155,10 +150,7 @@ export class VoiceController {
   async confirmBooking(@Body() body: ConfirmBookingToolDto) {
     try {
       const p = body.args ?? body;
-      const phone = body.call?.from_number;
-      if (!phone) {
-        return { result: `I'm having trouble identifying you. Could you try calling again?`, booking_id: null, slot_id: p.slot_id };
-      }
+      const phone = body.call?.from_number || `webcall:${body.call?.call_id}`;
       if (!p.slot_id || !p.provider_id) {
         return { result: `I'm missing the slot or provider details. Let me search again.`, booking_id: null, slot_id: null };
       }
